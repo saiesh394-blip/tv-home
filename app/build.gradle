@@ -1,0 +1,49 @@
+plugins {
+    id 'com.android.application'
+}
+
+// The signing key is private and never uploaded. If keystore.properties exists next to this
+// project (storeFile, storePassword, keyAlias, keyPassword), builds are signed with that key so
+// they install over earlier versions. Without it, Android Studio uses its own debug key.
+def keyProps = new Properties()
+def keyFile = rootProject.file('keystore.properties')
+if (keyFile.exists()) keyFile.withInputStream { keyProps.load(it) }
+
+android {
+    namespace 'com.home.tvhome'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.home.tvhome'
+        minSdk 23
+        targetSdk 29
+        versionCode 52
+        versionName '6.14'
+    }
+
+    signingConfigs {
+        if (keyFile.exists()) {
+            tvhome {
+                storeFile rootProject.file(keyProps['storeFile'])
+                storePassword keyProps['storePassword']
+                keyAlias keyProps['keyAlias']
+                keyPassword keyProps['keyPassword']
+            }
+        }
+    }
+
+    buildTypes {
+        debug {
+            if (keyFile.exists()) signingConfig signingConfigs.tvhome
+        }
+        release {
+            minifyEnabled false
+            if (keyFile.exists()) signingConfig signingConfigs.tvhome
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}

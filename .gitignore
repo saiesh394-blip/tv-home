@@ -1,0 +1,17 @@
+# Signing key: private, never upload
+keystore/
+*.jks
+*.keystore
+keystore.properties
+
+# Build output
+build/
+.gradle/
+local.properties
+*.apk
+*.aab
+
+# Editors and OS
+.idea/
+*.iml
+.DS_Store
