@@ -4,7 +4,7 @@ An ad-free, minimal home screen for Android TV and Google TV, with an Apple TV-s
 
 Built for a Xiaomi Google TV with a modest graphics chip, so it's tuned to stay smooth on slower TVs.
 
-**Download:** grab `TVHome-x.y.apk` from the [Releases](../../releases) page.
+**Download:** [TVHome-6.14.apk](download/TVHome-6.14.apk) (open it, then click the download button on the right).
 
 ## What it does
 
@@ -26,7 +26,7 @@ You need a Mac or PC with `adb` ([Android platform tools](https://developer.andr
 2. On your computer:
    ```
    adb connect <TV-IP>:5555
-   adb install -r TVHome-x.y.apk
+   adb install -r TVHome-6.14.apk
    ```
    Accept the prompt on the TV. "TV Home" now appears in your apps.
 
