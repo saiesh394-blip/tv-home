@@ -4,7 +4,7 @@ An ad-free, minimal home screen for Android TV and Google TV, with an Apple TV-s
 
 Built for a Xiaomi Google TV with a modest graphics chip, so it's tuned to stay smooth on slower TVs.
 
-**Download:** [TVHome-6.14.apk](download/TVHome-6.14.apk) (open it, then click the download button on the right).
+**Download:** [TVHome-6.24.apk](download/TVHome-6.24.apk) (open it, then click the download button on the right).
 
 ## What it does
 
@@ -14,9 +14,19 @@ Built for a Xiaomi Google TV with a modest graphics chip, so it's tuned to stay 
 - **All apps:** sorted by how often you use them. Hold OK on any app to add it to the dock, move it, hide it, or open App info.
 - **HDMI inputs:** a slim **Inputs** row that switches the TV straight to HDMI 1, HDMI 2 and so on. Rename one (say, "PS5") and add it to the dock.
 - **Search with voice:** search apps and YouTube; **Speak** shows Siri-style colour waves while you talk.
-- **Control Centre:** Wi-Fi, Bluetooth (Remotes & Accessories), Picture, Sound, Inputs, Storage, Install apps, Hidden apps, Screensaver, Appearance, volume.
+- **Control Centre:** an Apple-style cluster in the top-right corner over a blurred home screen: a big StandBy tile, Wi-Fi and Bluetooth with their status, Inputs, Settings, and round buttons for voice search, Screen Mirror, the screensaver and **More** (Install apps, Remap buttons, Hidden apps, Appearance, Picture, Sound, Storage). Tiles take their tint from your wallpaper.
 - **Install apps:** Aurora Store and F-Droid from f-droid.org, an APK link, or an APK from a USB drive, always through Android's own installer.
 - **Quiet and smooth:** no click sounds when moving around, night dimming, a screensaver.
+- **Continue Watching:** a row of what you were watching in apps that share it with Android TV (YouTube, Netflix, Prime Video and others), with progress bars. TV Home asks once for permission to read it.
+- **Recent:** the last few apps you opened, above All apps.
+- **Folders:** hold OK on an app → **Add to folder…** to group apps (say, Streaming or Utilities). Folders open in a frosted glass panel.
+- **Send from phone:** **Controls → Appearance → Wallpaper: Send from phone…** shows a link; open it on your phone (same Wi-Fi), pick a photo, and it becomes the wallpaper. The link has a one-time code and closes after one photo or 10 minutes.
+- **Remap buttons:** **Controls → More → Remap buttons** makes a remote button (Netflix, Prime Video, colour keys…) open any app or HDMI input. Needs accessibility access, switched on once in Settings → Accessibility or with adb (TV Home shows the command). Arrows, OK, Back, Home, volume and power are never changed.
+- **StandBy:** six bedside styles like iPhone StandBy (Analogue + Calendar, Modern + Weather, Date + Weather, Analogue, Float, Digital). Open it from **Controls → StandBy**; Left/Right switch styles, any other button goes back.
+- **Glass panels:** Control Centre and folders use a frosted look made from your wallpaper (worked out once, so it stays smooth).
+- **Settings:** a full Settings screen (the gear at the end of the dock, or **Controls → Settings**) in a Classic or Glass style.
+- **Icon styles:** Original, Light (Apple TV), Dark or Glass tiles for the dock icons.
+- **Icon packs:** **Controls → Appearance → Icon pack** restyles the dock icons with any installed icon pack (ADW / Nova format).
 
 ## Install
 
@@ -26,7 +36,7 @@ You need a Mac or PC with `adb` ([Android platform tools](https://developer.andr
 2. On your computer:
    ```
    adb connect <TV-IP>:5555
-   adb install -r TVHome-6.14.apk
+   adb install -r TVHome-6.24.apk
    ```
    Accept the prompt on the TV. "TV Home" now appears in your apps.
 

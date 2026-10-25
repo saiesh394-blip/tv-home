@@ -51,6 +51,12 @@ final class Wallpapers {
     static final String MODE_SCENERY = "scenery";
     static final String MODE_MINE = "mine";
     static final String MODE_COLOUR = "colour";
+    static final String MODE_PHONE = "phone";
+
+    /** The photo sent from your phone (Send from Phone). */
+    static File phoneFile(android.content.Context c) {
+        return new File(new File(c.getFilesDir(), "phone"), "wallpaper.jpg");
+    }
 
     private static final String UA = "TVHome/5.1 (personal TV home screen)";
     private static final int KEEP_FILES = 8;
@@ -120,6 +126,9 @@ final class Wallpapers {
                     if (MODE_MINE.equals(mode)) {
                         File f = pickMine(slot);
                         if (f != null) bmp = decode(f, targetW);
+                    } else if (MODE_PHONE.equals(mode)) {
+                        File f = phoneFile(ctx);
+                        if (f.exists()) bmp = decode(f, targetW);
                     }
                     if (bmp == null) {
                         String[] got = pickScenery(slot);

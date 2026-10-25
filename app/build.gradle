@@ -17,8 +17,8 @@ android {
         applicationId 'com.home.tvhome'
         minSdk 23
         targetSdk 29
-        versionCode 52
-        versionName '6.14'
+        versionCode 64
+        versionName '6.24'
     }
 
     signingConfigs {

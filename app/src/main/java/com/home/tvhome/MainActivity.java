@@ -195,6 +195,34 @@ public class MainActivity extends Activity {
     private boolean introDone;
     private ViewGroup mainRoot;
     private View pillView;
+    // 6.20: Continue Watching, Recent, folders, icon packs, Send from Phone, remapping, glass
+    private LinearLayout cwSection, cwRow, recentSection, recentRow;
+    private FrameLayout folderOverlay;
+    private LinearLayout folderPanel, folderGrid;
+    private TextView folderTitle;
+    private ScrollView folderScroll;
+    private String openFolder;
+    private IconPack iconPack;
+    private PhoneUpload phoneUpload;
+    private FrameLayout ccFrame;
+    private ImageView ccBlur;
+    private View ccFirst;
+    private final List<GradientDrawable> ccBgs = new ArrayList<>();
+    private final List<Runnable> ccRestyle = new ArrayList<>();
+    private int ccTint = 0xFF2E3A44;
+    // Settings screen
+    private FrameLayout settingsOverlay;
+    private ImageView settingsBg;
+    private LinearLayout settingsList;
+    private ScrollView settingsScroll;
+    private TextView settingsTitle;
+    private boolean settingsOpen;
+    private final List<Object[]> pageStack = new ArrayList<>();   // {Runnable page, title}
+    private App settingsApp;
+    private SharedPreferences.OnSharedPreferenceChangeListener remapListener;
+    private final Map<String, Drawable> glassCache = new HashMap<>();
+    private Bitmap glassPhoto;
+    private static final int REQ_EPG = 46;
 
     // Control Centre
     private FrameLayout ccOverlay;
@@ -263,7 +291,11 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         buildControlCentre(outer);
         buildSearch(outer);
+        buildFolderOverlay(outer);
+        buildSettings(outer);
         setContentView(outer);
+        String packPkg = prefs.getString("icon_pack", null);
+        if (packPkg != null) loadIconPack(packPkg);
         getWindow().setBackgroundDrawable(null);
     }
 
@@ -291,6 +323,8 @@ public class MainActivity extends Activity {
         ui.removeCallbacks(tick);
         tick.run();
         refreshWeather(false);
+        loadWatchNext();
+        askWatchNextOnce();
     }
 
     @Override
@@ -311,6 +345,8 @@ public class MainActivity extends Activity {
         super.onNewIntent(intent);
         if (ccOpen) closeControlCentre();
         if (searchOpen) closeSearch();
+        if (openFolder != null) closeFolderPanel(false);
+        if (settingsOpen) closeSettings(false);
         goTop();
     }
 
@@ -320,6 +356,8 @@ public class MainActivity extends Activity {
         if (ccOpen) { closeControlCentre(); return; }
         if (listening) { cancelVoice(); return; }
         if (searchOpen) { closeSearch(); return; }
+        if (openFolder != null) { closeFolderPanel(true); return; }
+        if (settingsOpen) { settingsBack(); return; }
         goTop();
     }
 
@@ -413,7 +451,7 @@ public class MainActivity extends Activity {
     private void moveBy(int dir) {
         int i = favRow.indexOfChild(movingCell);
         int j = i + dir;
-        if (i < 0 || j < 0 || j >= favRow.getChildCount()) {
+        if (i < 0 || j < 0 || j >= favRow.getChildCount() || isSettingsCell(favRow.getChildAt(j))) {
             // Gentle bump at the end of the row.
             movingCell.animate().translationX(dir * dp(10)).setDuration(90).withEndAction(new Runnable() {
                 @Override public void run() {
@@ -591,6 +629,12 @@ public class MainActivity extends Activity {
         content.setClipChildren(false);
         content.setClipToPadding(false);
         content.setPadding(side - dp(gap / 2), dp(4), side - dp(gap / 2), dp(24));
+        cwSection = section("Continue Watching");
+        cwRow = (LinearLayout) cwSection.getChildAt(1);
+        content.addView(cwSection);
+        recentSection = section("Recent");
+        recentRow = (LinearLayout) recentSection.getChildAt(1);
+        content.addView(recentSection);
         TextView appsLabel = new TextView(this);
         appsLabel.setText("All apps");
         appsLabel.setTextSize(14);
@@ -868,17 +912,27 @@ public class MainActivity extends Activity {
     }
 
     private void wallpaperMenu() {
-        final boolean mine = Wallpapers.MODE_MINE.equals(wallpapers.mode());
+        final String mode = wallpapers.mode();
         final boolean follow = followColour();
+        String packLabel = "None";
+        String ipk = prefs.getString("icon_pack", null);
+        if (ipk != null) {
+            try { packLabel = pm.getApplicationLabel(pm.getApplicationInfo(ipk, 0)).toString(); }
+            catch (Exception e) { packLabel = "None"; }
+        }
+        String name = prefs.getString("user_name", "");
+        final String tick = "\u2713  ";
         final String[] items = {
-                (!mine ? "✓  " : "") + "Wallpaper: Scenery by time of day",
-                (mine ? "✓  " : "") + "Wallpaper: My photos",
+                (Wallpapers.MODE_SCENERY.equals(mode) || Wallpapers.MODE_COLOUR.equals(mode) ? tick : "") + "Wallpaper: Scenery by time of day",
+                (Wallpapers.MODE_MINE.equals(mode) ? tick : "") + "Wallpaper: My photos",
+                (Wallpapers.MODE_PHONE.equals(mode) ? tick : "") + "Wallpaper: Send from phone\u2026",
                 "Wallpaper: Shuffle now",
-                (follow ? "✓  " : "") + "Colour: Follow the selected app",
-                (!follow ? "✓  " : "") + "Colour: Off (plain photo)",
-                (smooth ? "✓  " : "") + "Motion: Smooth (best for this TV)",
-                (smooth ? "" : "✓  ") + "Motion: Full effects (fades, colour glow)",
-                "Your name: " + (prefs.getString("user_name", "").isEmpty() ? "none" : prefs.getString("user_name", ""))};
+                (follow ? tick : "") + "Colour: Follow the selected app",
+                (!follow ? tick : "") + "Colour: Off (plain photo)",
+                (smooth ? tick : "") + "Motion: Smooth (best for this TV)",
+                (smooth ? "" : tick) + "Motion: Full effects (fades, colour glow)",
+                "Your name: " + (name.isEmpty() ? "none" : name),
+                "Icon pack: " + packLabel};
         new AlertDialog.Builder(this)
                 .setTitle("Appearance")
                 .setItems(items, new DialogInterface.OnClickListener() {
@@ -896,23 +950,27 @@ public class MainActivity extends Activity {
                                 useMyPhotos();
                             }
                         } else if (which == 2) {
-                            Toast.makeText(MainActivity.this, "Finding a new wallpaper…", Toast.LENGTH_SHORT).show();
+                            sendFromPhone();
+                        } else if (which == 3) {
+                            Toast.makeText(MainActivity.this, "Finding a new wallpaper\u2026", Toast.LENGTH_SHORT).show();
                             wallpapers.refresh(true);
-                        } else if (which == 3 || which == 4) {
-                            prefs.edit().putBoolean("follow_colour", which == 3).apply();
-                            if (which == 3) {
+                        } else if (which == 4 || which == 5) {
+                            prefs.edit().putBoolean("follow_colour", which == 4).apply();
+                            if (which == 4) {
                                 View f = getCurrentFocus();
                                 Tag t = f != null && f.getTag() instanceof Tag ? (Tag) f.getTag() : null;
-                                App app = t != null ? t.app : firstFavApp();
+                                App app = t != null && t.app != null ? t.app : firstFavApp();
                                 if (app != null) applyColour(app);
                             } else {
                                 shownColour = 0;
                                 presentPhoto(0, 400);
                             }
-                        } else if (which == 7) {
+                        } else if (which == 6 || which == 7) {
+                            setSmooth(which == 6);
+                        } else if (which == 8) {
                             askName();
                         } else {
-                            setSmooth(which == 5);
+                            chooseIconPack();
                         }
                     }
                 })
@@ -945,6 +1003,7 @@ public class MainActivity extends Activity {
     public void onRequestPermissionsResult(int req, String[] perms, int[] res) {
         super.onRequestPermissionsResult(req, perms, res);
         if (req == REQ_STORAGE) useMyPhotos();
+        if (req == REQ_EPG) loadWatchNext();
         if (req == REQ_MIC) {
             if (res.length > 0 && res[0] == PackageManager.PERMISSION_GRANTED) listenInApp();
             else voiceDialog();
@@ -1076,6 +1135,7 @@ public class MainActivity extends Activity {
 
     /** A small label and a one-line tagline for well-known apps. */
     private String[] tagline(App a) {
+        if ("tvhome:settings".equals(a.pkg)) return new String[]{"SETTINGS", "Wallpaper, StandBy, icons and more."};
         if (a.inputId != null) return a.console
                 ? new String[]{"GAME TIME", "Switch the TV to your console."}
                 : new String[]{"INPUT", "Switch the TV to " + a.label + "."};
@@ -1128,6 +1188,7 @@ public class MainActivity extends Activity {
             App a = apps.get(p);
             if (a != null) favRow.addView(dockCell(a));
         }
+        favRow.addView(dockCell(settingsApp()));
         if (favRow.getChildCount() == 0) {
             TextView empty = new TextView(this);
             empty.setText("Hold OK on any app and choose Add to favourites to fill your dock");
@@ -1137,7 +1198,7 @@ public class MainActivity extends Activity {
             favRow.addView(empty);
         }
         int n = favRow.getChildCount();
-        int barW = favRow.getChildAt(0) instanceof TextView ? dp(520) : n * dp(DOCK_ICON + DOCK_GAP) + dp(16);
+        int barW = favRow.getChildAt(0) instanceof TextView ? dp(600) : n * dp(DOCK_ICON + DOCK_GAP) + dp(16);
         dockBar.getLayoutParams().width = barW;
         dockBar.setScaleX(1f);
         dockBar.setTranslationX(0);
@@ -1158,8 +1219,28 @@ public class MainActivity extends Activity {
         });
         Set<String> favSet = new HashSet<>(favList);
         List<App> inputs = new ArrayList<>();
+        // Folders first, each as one tile.
+        Map<String, List<String>> folders = folders();
+        Set<String> inFolder = new HashSet<>();
+        for (Map.Entry<String, List<String>> f : folders.entrySet()) {
+            List<App> members = new ArrayList<>();
+            for (String fp : f.getValue()) {
+                App fa = apps.get(fp);
+                if (fa != null && !hide.contains(fp)) { members.add(fa); inFolder.add(fp); }
+            }
+            if (members.isEmpty()) continue;
+            if (i % COLS == 0) {
+                row = new LinearLayout(this);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                row.setClipChildren(false);
+                row.setClipToPadding(false);
+                allGrid.addView(row);
+            }
+            row.addView(folderCell(f.getKey(), members));
+            i++;
+        }
         for (App a : ordered) {
-            if (hide.contains(a.pkg) || favSet.contains(a.pkg)) continue;
+            if (hide.contains(a.pkg) || favSet.contains(a.pkg) || inFolder.contains(a.pkg)) continue;
             if (a.inputId != null) { inputs.add(a); continue; }
             if (i % COLS == 0) {
                 row = new LinearLayout(this);
@@ -1172,6 +1253,7 @@ public class MainActivity extends Activity {
             i++;
         }
         if (!inputs.isEmpty()) allGrid.addView(inputChips(inputs));
+        renderRecents();
         updateUpLinks();
         muteClicks(getWindow().getDecorView());
 
@@ -1195,18 +1277,29 @@ public class MainActivity extends Activity {
 
     /** Up from the top row of apps goes to the pills; Down from the pills comes back to the apps. */
     private void updateUpLinks() {
-        View first = firstGridTile();
+        List<ViewGroup> rows = new ArrayList<>();
+        if (cwSection != null && cwSection.getVisibility() == View.VISIBLE && cwRow.getChildCount() > 0) rows.add(cwRow);
+        if (recentSection != null && recentSection.getVisibility() == View.VISIBLE && recentRow.getChildCount() > 0) rows.add(recentRow);
+        if (allGrid.getChildCount() > 0) rows.add((ViewGroup) allGrid.getChildAt(0));
+        View first = null;
+        if (!rows.isEmpty() && rows.get(0).getChildAt(0) instanceof ViewGroup) {
+            first = ((ViewGroup) rows.get(0).getChildAt(0)).getChildAt(0);
+            if (first != null && !first.isFocusable()) first = null;
+        }
         if (first == null) first = firstTile();
         if (first != null) {
             if (first.getId() == View.NO_ID) first.setId(View.generateViewId());
             if (tabs[2] != null) tabs[2].setNextFocusDownId(first.getId());
             if (tabs[3] != null) tabs[3].setNextFocusDownId(first.getId());
         }
-        if (allGrid.getChildCount() > 0 && tabs[2] != null) {
-            ViewGroup top = (ViewGroup) allGrid.getChildAt(0);
+        if (tabs[2] == null) return;
+        for (int r = 0; r < rows.size(); r++) {
+            ViewGroup top = rows.get(r);
             for (int k = 0; k < top.getChildCount(); k++) {
                 View c = top.getChildAt(k);
-                if (c instanceof ViewGroup) ((ViewGroup) c).getChildAt(0).setNextFocusUpId(tabs[2].getId());
+                if (c instanceof ViewGroup && ((ViewGroup) c).getChildCount() > 0) {
+                    ((ViewGroup) c).getChildAt(0).setNextFocusUpId(r == 0 ? tabs[2].getId() : View.NO_ID);
+                }
             }
         }
     }
@@ -1234,6 +1327,7 @@ public class MainActivity extends Activity {
         if (row == null) return;
 
         if (row == favRow) return;   // the dock always fits on screen
+        if (!isInside(row, content)) return;   // folder panel: its own scroll view handles it
         // All apps: bring the selected row up into view.
         Rect r = new Rect();
         row.getDrawingRect(r);
@@ -1369,6 +1463,26 @@ public class MainActivity extends Activity {
         try {
             Bitmap art = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
             Canvas c = new Canvas(art);
+            if ("tvhome:settings".equals(a.pkg)) {
+                Bitmap g = Art.gearTile(size);
+                c.drawBitmap(g, 0, 0, null);
+                g.recycle();
+                return roundOff(art, size);
+            }
+            Drawable packed = iconPack != null && a.inputId == null ? iconPack.get(a.cn) : null;
+            if (packed != null) {
+                c.drawColor(0xFF2B2F38);
+                packed.setBounds(0, 0, size, size);
+                packed.draw(c);
+                Bitmap pout = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
+                Canvas pc = new Canvas(pout);
+                Paint pp = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+                pp.setShader(new BitmapShader(art, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP));
+                float pr = size * 0.23f;
+                pc.drawRoundRect(new RectF(0, 0, size, size), pr, pr, pp);
+                art.recycle();
+                return pout;
+            }
             Drawable sharp = a.inputId == null ? hiResIcon(a) : null;
             boolean adaptive = Build.VERSION.SDK_INT >= 26
                     && sharp instanceof android.graphics.drawable.AdaptiveIconDrawable;
@@ -1376,6 +1490,10 @@ public class MainActivity extends Activity {
             if (src == null) return null;
             Drawable.ConstantState cs = src.getConstantState();
             Drawable d = cs != null ? cs.newDrawable(getResources()).mutate() : src;
+            int iconStyle = prefs.getInt("icon_style", 0);
+            if (iconStyle != 0 && a.inputId == null && styledIcon(c, a, d, adaptive, sharp, size, iconStyle)) {
+                return roundOff(art, size);
+            }
             if (adaptive) {
                 // The app's own square icon, full bleed: the same art Android uses on phones.
                 android.graphics.drawable.AdaptiveIconDrawable ad = (android.graphics.drawable.AdaptiveIconDrawable) d;
@@ -1706,6 +1824,10 @@ public class MainActivity extends Activity {
     }
 
     private View cell(final App a, final boolean fav) {
+        return cell(a, fav, fav ? "f:" : "a:");
+    }
+
+    private View cell(final App a, final boolean fav, String keyPrefix) {
         FrameLayout t;
         if (a.banner != null) {
             t = baseTile(0);   // the artwork is already rounded, so nothing is drawn underneath
@@ -1727,7 +1849,7 @@ public class MainActivity extends Activity {
         }
         TextView label = nameLabel(a.label);
         t.setContentDescription(a.label);
-        Tag tag = new Tag(a, fav, (fav ? "f:" : "a:") + a.pkg, label);
+        Tag tag = new Tag(a, fav, keyPrefix + a.pkg, label);
         tag.inner = t.getChildAt(0);
         addOverlays(t, tag);
         t.setTag(tag);
@@ -2229,8 +2351,11 @@ public class MainActivity extends Activity {
                 try {
                     float lat = prefs.getFloat("lat", Float.NaN), lon = prefs.getFloat("lon", Float.NaN);
                     long locTime = prefs.getLong("loc_time", 0);
-                    if (Float.isNaN(lat) || System.currentTimeMillis() - locTime > 24 * 3600 * 1000L) {
+                    if (Float.isNaN(lat) || System.currentTimeMillis() - locTime > 24 * 3600 * 1000L
+                            || !prefs.contains("weather_city")) {
                         JSONObject loc = new JSONObject(get("https://ipapi.co/json/"));
+                        String city = loc.optString("city", "");
+                        if (!city.isEmpty()) prefs.edit().putString("weather_city", city).apply();
                         lat = (float) loc.getDouble("latitude");
                         lon = (float) loc.getDouble("longitude");
                         prefs.edit().putFloat("lat", lat).putFloat("lon", lon)
@@ -2454,6 +2579,10 @@ public class MainActivity extends Activity {
         return id != 0 ? id : android.R.drawable.ic_menu_preferences;
     }
 
+    // ---------- Control Centre (Apple-style: a compact floating cluster, top right) ----------
+
+    private static final int CC_BIG = 0, CC_WIDE = 1, CC_ROUND = 2;
+
     private void buildControlCentre(FrameLayout outer) {
         audio = (AudioManager) getSystemService(AUDIO_SERVICE);
 
@@ -2461,99 +2590,274 @@ public class MainActivity extends Activity {
         ccOverlay.setVisibility(View.INVISIBLE);
         ccOverlay.setClipChildren(false);
 
-        ccScrim = new View(this);
-        ccScrim.setBackgroundColor(0x80000000);
-        ccOverlay.addView(ccScrim, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        // The whole home screen, softly blurred: made once each time Control Centre opens.
+        ccBlur = new ImageView(this);
+        ccBlur.setScaleType(ImageView.ScaleType.FIT_XY);
+        ccOverlay.addView(ccBlur, new FrameLayout.LayoutParams(-1, -1));
+        ccScrim = new View(this);   // kept for older code paths; the darkening is baked into the blur
+        ccOverlay.addView(ccScrim, new FrameLayout.LayoutParams(0, 0));
 
+        ccFrame = new FrameLayout(this);
+        ccFrame.setClipChildren(false);
+        ccFrame.setClipToPadding(false);
         ccPanel = new LinearLayout(this);
         ccPanel.setOrientation(LinearLayout.VERTICAL);
         ccPanel.setClipChildren(false);
         ccPanel.setClipToPadding(false);
-        ccPanel.setPadding(dp(30), dp(30), dp(30), dp(26));
-        GradientDrawable pbg = new GradientDrawable();
-        pbg.setColor(0xF0171A21);
-        pbg.setCornerRadii(new float[]{dp(28), dp(28), 0, 0, 0, 0, dp(28), dp(28)});
-        ccPanel.setBackground(pbg);
-        ccPanel.setTranslationX(dp(430));
+
+        int col = 124, gapDp = 8, full = col * 2 + gapDp;
 
         // Time and date
+        LinearLayout head = new LinearLayout(this);
+        head.setOrientation(LinearLayout.HORIZONTAL);
+        head.setGravity(Gravity.BOTTOM);
+        head.setPadding(dp(6), 0, dp(6), dp(12));
         TextClock t = new TextClock(this);
-        t.setFormat12Hour("h:mm");
+        t.setFormat12Hour("h:mm a");
         t.setFormat24Hour("HH:mm");
-        t.setTextSize(32);
+        t.setTextSize(19);
         t.setTextColor(Color.WHITE);
-        t.setTypeface(Typeface.create("sans-serif-light", Typeface.NORMAL));
-        t.setIncludeFontPadding(false);
-        ccPanel.addView(t);
+        t.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        t.setShadowLayer(dp(6), 0, 0, 0x66000000);
+        head.addView(t, new LinearLayout.LayoutParams(0, -2, 1f));
         TextClock d = new TextClock(this);
-        d.setFormat12Hour("EEEE, d MMMM");
-        d.setFormat24Hour("EEEE, d MMMM");
-        d.setTextSize(14);
-        d.setTextColor(0x99FFFFFF);
-        d.setPadding(dp(2), dp(2), 0, dp(12));
-        ccPanel.addView(d);
+        d.setFormat12Hour("EEE d MMM");
+        d.setFormat24Hour("EEE d MMM");
+        d.setTextSize(13);
+        d.setTextColor(0xCCFFFFFF);
+        d.setShadowLayer(dp(6), 0, 0, 0x66000000);
+        head.addView(d);
+        ccPanel.addView(head, new LinearLayout.LayoutParams(dp(full), -2));
 
-        // Shortcut tiles, three across
-        String[][] items = {
-                {"ic_wifi", "Wi-Fi"}, {"ic_bluetooth", "Bluetooth"}, {"ic_cast", "Screen Mirror"},
-                {"ic_picture", "Picture"}, {"ic_sound", "Sound"}, {"ic_input", "Inputs"},
-                {"ic_storage", "Storage"}, {"ic_download", "Install apps"}, {"ic_hidden", "Hidden apps"},
-                {"ic_moon", "Screensaver"}, {"ic_wallpaper", "Appearance"}, {"gear", "All settings"}};
-        LinearLayout row = null;
-        for (int i = 0; i < items.length; i++) {
-            if (i % 3 == 0) {
-                row = new LinearLayout(this);
-                row.setOrientation(LinearLayout.HORIZONTAL);
-                row.setClipChildren(false);
-                ccPanel.addView(row);
-            }
-            View tile = ccTile(items[i][0], items[i][1]);
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(66), 1f);
-            lp.setMargins(i % 3 == 0 ? 0 : dp(5), dp(5), i % 3 == 2 ? 0 : dp(5), dp(5));
-            row.addView(tile, lp);
-        }
-        // Keep the last row lined up with the others.
-        int rem = items.length % 3;
-        for (int k = rem; rem != 0 && k < 3; k++) {
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(66), 1f);
-            lp.setMargins(dp(5), dp(5), k == 2 ? 0 : dp(5), dp(5));
-            row.addView(new View(this), lp);
-        }
+        // StandBy (big) beside Wi-Fi and Bluetooth
+        LinearLayout b1 = new LinearLayout(this);
+        b1.setOrientation(LinearLayout.HORIZONTAL);
+        b1.setClipChildren(false);
+        View standby = ccBlock("ic_clock", "StandBy", "Standby clock", CC_BIG, false);
+        ccFirst = standby;
+        LinearLayout.LayoutParams sl = new LinearLayout.LayoutParams(dp(col), dp(128));
+        sl.setMargins(0, 0, dp(gapDp), 0);
+        b1.addView(standby, sl);
+        LinearLayout colRight = new LinearLayout(this);
+        colRight.setOrientation(LinearLayout.VERTICAL);
+        colRight.setClipChildren(false);
+        LinearLayout.LayoutParams wl = new LinearLayout.LayoutParams(dp(col), dp(60));
+        wl.setMargins(0, 0, 0, dp(gapDp));
+        colRight.addView(ccBlock("ic_wifi", "Wi-Fi", "Wi-Fi", CC_WIDE, true), wl);
+        colRight.addView(ccBlock("ic_bluetooth", "Bluetooth", "Bluetooth", CC_WIDE, true),
+                new LinearLayout.LayoutParams(dp(col), dp(60)));
+        b1.addView(colRight);
+        LinearLayout.LayoutParams b1l = new LinearLayout.LayoutParams(-2, -2);
+        b1l.setMargins(0, 0, 0, dp(gapDp));
+        ccPanel.addView(b1, b1l);
 
-        // Volume
+        // Inputs and Settings
+        LinearLayout b2 = new LinearLayout(this);
+        b2.setOrientation(LinearLayout.HORIZONTAL);
+        b2.setClipChildren(false);
+        LinearLayout.LayoutParams il = new LinearLayout.LayoutParams(dp(col), dp(56));
+        il.setMargins(0, 0, dp(gapDp), 0);
+        b2.addView(ccBlock("ic_input", "Inputs", "Inputs", CC_WIDE, false), il);
+        b2.addView(ccBlock("gear", "Settings", "TV Home settings", CC_WIDE, false), new LinearLayout.LayoutParams(dp(col), dp(56)));
+        LinearLayout.LayoutParams b2l = new LinearLayout.LayoutParams(-2, -2);
+        b2l.setMargins(0, 0, 0, dp(12));
+        ccPanel.addView(b2, b2l);
+
+        // Round buttons: voice, mirror, screensaver, more
+        LinearLayout r = new LinearLayout(this);
+        r.setOrientation(LinearLayout.HORIZONTAL);
+        r.setClipChildren(false);
+        String[][] rounds = {{"ic_mic", "Voice search"}, {"ic_cast", "Screen Mirror"},
+                {"ic_moon", "Screensaver"}, {"ic_apps", "More"}};
+        int circle = 50, space = (full - 4 * circle) / 3;
+        for (int i = 0; i < rounds.length; i++) {
+            LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(dp(circle), dp(circle));
+            if (i < rounds.length - 1) rl.setMargins(0, 0, dp(space), 0);
+            r.addView(ccBlock(rounds[i][0], rounds[i][1], rounds[i][1], CC_ROUND, false), rl);
+        }
+        LinearLayout.LayoutParams rll = new LinearLayout.LayoutParams(-2, -2);
+        rll.setMargins(0, 0, 0, dp(12));
+        ccPanel.addView(r, rll);
+
+        // Volume (shows what the remote's volume buttons do)
         LinearLayout vol = new LinearLayout(this);
         vol.setOrientation(LinearLayout.HORIZONTAL);
         vol.setGravity(Gravity.CENTER_VERTICAL);
-        vol.setClipChildren(false);
-        vol.setPadding(dp(14), 0, dp(14), 0);
+        vol.setPadding(dp(16), 0, dp(18), 0);
         GradientDrawable vbg = new GradientDrawable();
         vbg.setCornerRadius(dp(20));
-        vbg.setColor(0x14FFFFFF);
+        vbg.setStroke(Math.max(1, dp(1)), 0x2EFFFFFF);
+        ccBgs.add(vbg);
         vol.setBackground(vbg);
-        vol.addView(roundButton(null, "ic_mute", new Runnable() {
-            @Override public void run() { volume(AudioManager.ADJUST_TOGGLE_MUTE); }
-        }));
-        vol.addView(roundButton("−", null, new Runnable() {
-            @Override public void run() { volume(AudioManager.ADJUST_LOWER); }
-        }));
+        ImageView vi = new ImageView(this);
+        vi.setImageResource(drawable("ic_sound"));
+        vi.setColorFilter(0xFFFFFFFF);
+        vol.addView(vi, new LinearLayout.LayoutParams(dp(18), dp(18)));
         volBar = new VolBar(this);
-        LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(0, dp(24), 1f);
-        blp.setMargins(dp(10), 0, dp(10), 0);
-        vol.addView(volBar, blp);
-        vol.addView(roundButton("+", null, new Runnable() {
-            @Override public void run() { volume(AudioManager.ADJUST_RAISE); }
-        }));
-        LinearLayout.LayoutParams vlp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(66));
-        vlp.setMargins(0, dp(12), 0, 0);
-        ccPanel.addView(vol, vlp);
+        LinearLayout.LayoutParams vbl = new LinearLayout.LayoutParams(0, dp(16), 1f);
+        vbl.setMargins(dp(12), 0, 0, 0);
+        vol.addView(volBar, vbl);
+        ccPanel.addView(vol, new LinearLayout.LayoutParams(dp(full), dp(40)));
 
-        FrameLayout.LayoutParams plp = new FrameLayout.LayoutParams(
-                dp(430), ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END);
-        ccOverlay.addView(ccPanel, plp);
-        outer.addView(ccOverlay, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        ccFrame.addView(ccPanel, new FrameLayout.LayoutParams(-2, -2));
+        FrameLayout.LayoutParams plp = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.END);
+        plp.setMargins(0, dp(20), dp(40), 0);
+        ccOverlay.addView(ccFrame, plp);
+        outer.addView(ccOverlay, new FrameLayout.LayoutParams(-1, -1));
+        applyCcTint();
+    }
+
+    /** One Control Centre tile: a big square, a wide pill (with an optional status line), or a round button. */
+    private View ccBlock(String icon, String title, final String action, final int kind, boolean withSub) {
+        final ViewGroup tile;
+        final GradientDrawable bg = new GradientDrawable();
+        bg.setStroke(Math.max(1, dp(1)), 0x2EFFFFFF);
+        if (kind == CC_ROUND) bg.setShape(GradientDrawable.OVAL);
+        else bg.setCornerRadius(dp(kind == CC_BIG ? 26 : 28));
+        ccBgs.add(bg);
+
+        final ImageView ic = new ImageView(this);
+        ic.setImageResource(drawable(icon));
+        ic.setColorFilter(0xFFFFFFFF);
+        final TextView tv = kind == CC_ROUND ? null : new TextView(this);
+        final TextView sub = withSub ? new TextView(this) : null;
+        if (tv != null) {
+            tv.setText(title);
+            tv.setTextColor(Color.WHITE);
+            tv.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+            tv.setSingleLine(true);
+            tv.setEllipsize(TextUtils.TruncateAt.END);
+        }
+        if (kind == CC_BIG) {
+            LinearLayout v = new LinearLayout(this);
+            v.setOrientation(LinearLayout.VERTICAL);
+            v.setGravity(Gravity.CENTER);
+            v.addView(ic, new LinearLayout.LayoutParams(dp(40), dp(40)));
+            tv.setTextSize(15);
+            tv.setPadding(0, dp(10), 0, 0);
+            tv.setGravity(Gravity.CENTER_HORIZONTAL);
+            v.addView(tv, new LinearLayout.LayoutParams(-2, -2));
+            tile = v;
+        } else if (kind == CC_WIDE) {
+            LinearLayout h = new LinearLayout(this);
+            h.setOrientation(LinearLayout.HORIZONTAL);
+            h.setGravity(Gravity.CENTER_VERTICAL);
+            h.setPadding(dp(16), 0, dp(12), 0);
+            h.addView(ic, new LinearLayout.LayoutParams(dp(22), dp(22)));
+            LinearLayout texts = new LinearLayout(this);
+            texts.setOrientation(LinearLayout.VERTICAL);
+            texts.setPadding(dp(12), 0, 0, 0);
+            tv.setTextSize(14);
+            texts.addView(tv);
+            if (sub != null) {
+                sub.setTextSize(12);
+                sub.setTextColor(0x99FFFFFF);
+                sub.setSingleLine(true);
+                sub.setEllipsize(TextUtils.TruncateAt.END);
+                sub.setVisibility(View.GONE);
+                texts.addView(sub);
+                ccSubs.put(title, sub);
+            }
+            h.addView(texts, new LinearLayout.LayoutParams(0, -2, 1f));
+            tile = h;
+        } else {
+            FrameLayout f = new FrameLayout(this);
+            f.addView(ic, new FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER));
+            tile = f;
+        }
+        tile.setBackground(bg);
+        tile.setFocusable(true);
+        tile.setClickable(true);
+        tile.setContentDescription(title);
+        if (Build.VERSION.SDK_INT >= 26) tile.setDefaultFocusHighlightEnabled(false);
+
+        final Runnable restyle = new Runnable() {
+            @Override public void run() {
+                boolean has = tile.isFocused();
+                bg.setColor(has ? 0xFFFFFFFF : ccFill());
+                int fg = has ? 0xFF111317 : 0xFFFFFFFF;
+                ic.setColorFilter(fg);
+                if (tv != null) tv.setTextColor(fg);
+                if (sub != null) sub.setTextColor(has ? 0x99111317 : 0x99FFFFFF);
+            }
+        };
+        ccRestyle.add(restyle);
+        tile.setOnFocusChangeListener(new View.OnFocusChangeListener() {
+            @Override public void onFocusChange(View v, boolean has) {
+                restyle.run();
+                float up = kind == CC_ROUND ? 1.12f : 1.05f;
+                v.animate().scaleX(has ? up : 1f).scaleY(has ? up : 1f)
+                        .setInterpolator(has ? SPRING : EASE).setDuration(has ? 280 : 180).start();
+            }
+        });
+        tile.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                if (action.equals("Voice search")) {
+                    closeControlCentre();
+                    openSearch();
+                    startVoice();
+                } else if (action.equals("More")) {
+                    moreMenu();
+                } else {
+                    ccAction(action);
+                }
+            }
+        });
+        return tile;
+    }
+
+    /** The tiles' frosted colour, taken from the wallpaper so they belong to it (green photo, green glass). */
+    private int ccFill() {
+        return (0xC0 << 24) | (ccTint & 0xFFFFFF);
+    }
+
+    private void applyCcTint() {
+        if (basePhoto != null) {
+            try {
+                Bitmap one = Bitmap.createScaledBitmap(basePhoto, 1, 1, true);
+                int c = one.getPixel(0, 0);
+                one.recycle();
+                float[] hsv = new float[3];
+                Color.colorToHSV(c, hsv);
+                hsv[1] = Math.min(hsv[1], 0.55f);
+                hsv[2] = Math.max(0.16f, Math.min(hsv[2] * 0.55f, 0.34f));
+                ccTint = Color.HSVToColor(hsv);
+            } catch (Throwable ignored) { }
+        }
+        for (GradientDrawable g : ccBgs) g.setColor(ccFill());
+        for (Runnable rs : ccRestyle) rs.run();
+    }
+
+    /** "More": the rest of the tools, so the main view stays clean. */
+    private void moreMenu() {
+        final String[] items = {"Install apps", "Remap buttons", "Hidden apps", "Appearance", "Picture", "Sound", "Storage"};
+        closeControlCentre();
+        new AlertDialog.Builder(this)
+                .setTitle("More")
+                .setItems(items, new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface d, int which) { ccAction(items[which]); }
+                })
+                .show();
+    }
+
+    /** A small, blurred, slightly darkened picture of the home screen as it is right now. */
+    private Drawable ccBackdrop() {
+        try {
+            int w = mainRoot.getWidth(), h = mainRoot.getHeight();
+            if (w == 0 || h == 0) return null;
+            int sw = Math.max(8, w / 10), sh = Math.max(8, h / 10);
+            Bitmap b = Bitmap.createBitmap(sw, sh, Bitmap.Config.ARGB_8888);
+            Canvas c = new Canvas(b);
+            c.scale(sw / (float) w, sh / (float) h);
+            mainRoot.draw(c);
+            Glass.blur(b);
+            new Canvas(b).drawColor(0x40000000);
+            android.graphics.drawable.BitmapDrawable d = new android.graphics.drawable.BitmapDrawable(getResources(), b);
+            d.setFilterBitmap(true);
+            return d;
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
     private View ccTile(String icon, final String label) {
@@ -2683,7 +2987,12 @@ public class MainActivity extends Activity {
             return;
         } else if (label.equals("Appearance")) {
             closeControlCentre();
-            wallpaperMenu();
+            openSettings();
+            showPage(new Runnable() { @Override public void run() { pageAppearance(); } }, "Appearance");
+            return;
+        } else if (label.equals("TV Home settings")) {
+            closeControlCentre();
+            openSettings();
             return;
         } else if (label.equals("Storage")) {
             startOr(new Intent(Settings.ACTION_INTERNAL_STORAGE_SETTINGS));
@@ -2711,6 +3020,14 @@ public class MainActivity extends Activity {
             } catch (Exception e) {
                 startOr(new Intent(Settings.ACTION_DREAM_SETTINGS));
             }
+            return;
+        } else if (label.equals("Standby clock")) {
+            closeControlCentre();
+            startActivity(new Intent(this, StandbyActivity.class));
+            return;
+        } else if (label.equals("Remap buttons")) {
+            closeControlCentre();
+            remapMenu();
             return;
         } else if (label.equals("Hidden apps")) {
             closeControlCentre();
@@ -2756,7 +3073,11 @@ public class MainActivity extends Activity {
                 }
             }
         } catch (Exception ignored) { }
-        setSub("Wi-Fi", net);
+        setSub("Wi-Fi", net.replace(" \u00B7 ", " \u00B7 "));
+        try {
+            android.bluetooth.BluetoothAdapter ba = android.bluetooth.BluetoothAdapter.getDefaultAdapter();
+            setSub("Bluetooth", ba == null ? "" : ba.isEnabled() ? "On" : "Off");
+        } catch (Throwable ignored) { }
 
         // Storage left on the TV.
         try {
@@ -2802,60 +3123,1332 @@ public class MainActivity extends Activity {
         ccOpen = true;
         updateStatus();
         updateVolume();
+        applyCcTint();
+        Drawable backdrop = ccBackdrop();
+        ccBlur.setImageDrawable(backdrop);
+        ccBlur.setBackgroundColor(backdrop == null ? 0x99000000 : 0);
         mainRoot.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
-        // No live blur behind the panel: on this TV it drops most frames of the slide.
         ccOverlay.setVisibility(View.VISIBLE);
-        ccScrim.animate().cancel();
-        ccScrim.setAlpha(0f);
-        ccScrim.animate().alpha(1f).setInterpolator(EASE).setDuration(380).start();
 
-        // The panel glides in from the right and settles, slowing gently at the end.
-        ccPanel.animate().cancel();
-        ccPanel.setTranslationX(dp(150));
-        ccPanel.setAlpha(0f);
-        ccPanel.setScaleX(0.97f);
-        ccPanel.setScaleY(0.97f);
-        ccPanel.setPivotX(ccPanel.getWidth() > 0 ? ccPanel.getWidth() : dp(430));
-        ccPanel.setPivotY(ccPanel.getHeight() / 2f);
-        ccPanel.animate().translationX(0).alpha(1f).scaleX(1f).scaleY(1f)
-                .setInterpolator(GLIDE).setDuration(520).withLayer().start();
+        // The home screen melts into a blur...
+        ccBlur.animate().cancel();
+        ccBlur.setAlpha(0f);
+        ccBlur.animate().alpha(1f).setInterpolator(EASE).setDuration(300).withEndAction(new Runnable() {
+            @Override public void run() {
+                // Nothing needs drawing behind an opaque blur, so give the graphics chip a rest.
+                if (ccOpen && ccBlur.getDrawable() != null) mainRoot.setVisibility(View.INVISIBLE);
+            }
+        }).start();
 
-        // Its contents follow a beat later, one row after another.
+        // ...and the tiles drop in from the top-right corner and settle.
+        ccFrame.animate().cancel();
+        ccFrame.setAlpha(0f);
+        ccFrame.setTranslationX(dp(24));
+        ccFrame.setTranslationY(-dp(16));
+        ccFrame.setScaleX(0.94f);
+        ccFrame.setScaleY(0.94f);
+        ccFrame.setPivotX(ccFrame.getWidth() > 0 ? ccFrame.getWidth() : dp(256));
+        ccFrame.setPivotY(0);
+        ccFrame.animate().alpha(1f).translationX(0).translationY(0).scaleX(1f).scaleY(1f)
+                .setStartDelay(40).setInterpolator(GLIDE).setDuration(480).withLayer().start();
         for (int i = 0; i < ccPanel.getChildCount(); i++) {
             View c = ccPanel.getChildAt(i);
             c.animate().cancel();
             c.setAlpha(0f);
-            c.setTranslationX(dp(36));
-            c.animate().alpha(1f).translationX(0).setStartDelay(90 + i * 35L)
-                    .setInterpolator(GLIDE).setDuration(460).start();
+            c.setTranslationY(-dp(10));
+            c.animate().alpha(1f).translationY(0).setStartDelay(90 + i * 45L)
+                    .setInterpolator(GLIDE).setDuration(420).start();
         }
         ccPanel.postDelayed(new Runnable() {
-            @Override public void run() {
-                if (!ccOpen) return;
-                ViewGroup firstRow = (ViewGroup) ccPanel.getChildAt(2);
-                if (firstRow != null && firstRow.getChildCount() > 0) firstRow.getChildAt(0).requestFocus();
-            }
-        }, 180);
+            @Override public void run() { if (ccOpen && ccFirst != null) ccFirst.requestFocus(); }
+        }, 160);
     }
 
     private void closeControlCentre() {
         if (!ccOpen) return;
         ccOpen = false;
-        ccScrim.animate().cancel();
-        ccScrim.animate().alpha(0f).setInterpolator(EASE).setDuration(280).start();
-        ccPanel.animate().cancel();
-        ccPanel.animate().translationX(dp(120)).alpha(0f).scaleX(0.98f).scaleY(0.98f)
-                .setInterpolator(EASE).setDuration(280).withLayer()
+        mainRoot.setVisibility(View.VISIBLE);
+        ccBlur.animate().cancel();
+        ccBlur.animate().alpha(0f).setInterpolator(EASE).setDuration(260).start();
+        ccFrame.animate().cancel();
+        ccFrame.animate().alpha(0f).translationX(dp(16)).translationY(-dp(8)).scaleX(0.97f).scaleY(0.97f)
+                .setStartDelay(0).setInterpolator(EASE).setDuration(220).withLayer()
                 .withEndAction(new Runnable() {
                     @Override public void run() {
                         if (!ccOpen) {
                             ccOverlay.setVisibility(View.INVISIBLE);
-                            ccPanel.setTranslationX(dp(430));
+                            ccBlur.setImageDrawable(null);
                         }
                     }
                 }).start();
         mainRoot.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS);
         if (pillView != null) pillView.requestFocus();
+    }
+
+    // ================================================================== 6.20 features
+
+    private static boolean isInside(View v, View container) {
+        for (Object p = v; p instanceof View; p = ((View) p).getParent()) if (p == container) return true;
+        return false;
+    }
+
+    /** A titled row in the main list (Continue Watching, Recent). Hidden until it has something. */
+    private LinearLayout section(String title) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setClipChildren(false);
+        box.setClipToPadding(false);
+        box.setVisibility(View.GONE);
+        box.setPadding(0, 0, 0, dp(6));
+        TextView label = new TextView(this);
+        label.setText(title);
+        label.setTextSize(14);
+        label.setTextColor(0xE6FFFFFF);
+        label.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        label.setPadding(dp(gap / 2), 0, 0, dp(2));
+        box.addView(label);
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setClipChildren(false);
+        row.setClipToPadding(false);
+        box.addView(row);
+        return box;
+    }
+
+    // ---------- Recent apps ----------
+
+    private List<String> recents() {
+        List<String> r = new ArrayList<>();
+        for (String p : prefs.getString("recents", "").split("\n")) if (!p.isEmpty()) r.add(p);
+        return r;
+    }
+
+    private void addRecent(String pkg) {
+        List<String> r = recents();
+        r.remove(pkg);
+        r.add(0, pkg);
+        while (r.size() > 10) r.remove(r.size() - 1);
+        prefs.edit().putString("recents", TextUtils.join("\n", r)).apply();
+    }
+
+    private void renderRecents() {
+        if (recentRow == null) return;
+        recentRow.removeAllViews();
+        Set<String> hide = hidden();
+        int n = 0;
+        for (String p : recents()) {
+            App a = apps.get(p);
+            if (a == null || hide.contains(p) || a.inputId != null) continue;
+            recentRow.addView(cell(a, false, "r:"));
+            if (++n >= COLS) break;
+        }
+        recentSection.setVisibility(n > 0 ? View.VISIBLE : View.GONE);
+        muteClicks(recentRow);
+    }
+
+    // ---------- Continue Watching (Android TV's Watch Next list) ----------
+
+    static class Wn {
+        long id;
+        String title, pkg, poster, intent;
+        long pos, dur, when;
+        Bitmap art;
+    }
+
+    private boolean watchNextAllowed() {
+        if (Build.VERSION.SDK_INT < 23) return true;
+        return checkSelfPermission("com.android.providers.tv.permission.READ_EPG_DATA") == PackageManager.PERMISSION_GRANTED
+                || checkSelfPermission("android.permission.READ_TV_LISTINGS") == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private void askWatchNextOnce() {
+        if (Build.VERSION.SDK_INT < 26 || watchNextAllowed() || !prefs.contains("user_name")
+                || prefs.getBoolean("epg_asked", false)) return;
+        prefs.edit().putBoolean("epg_asked", true).apply();
+        ui.postDelayed(new Runnable() {
+            @Override public void run() {
+                try {
+                    requestPermissions(new String[]{"com.android.providers.tv.permission.READ_EPG_DATA",
+                            "android.permission.READ_TV_LISTINGS"}, REQ_EPG);
+                } catch (Exception ignored) { }
+            }
+        }, 1500);
+    }
+
+    private void loadWatchNext() {
+        if (Build.VERSION.SDK_INT < 26 || cwRow == null) return;
+        final int artW = dp(tileW), artH = dp(tileH);
+        new Thread(new Runnable() {
+            @Override public void run() {
+                final List<Wn> list = new ArrayList<>();
+                android.database.Cursor c = null;
+                try {
+                    c = getContentResolver().query(android.media.tv.TvContract.WatchNextPrograms.CONTENT_URI,
+                            null, null, null, null);
+                    while (c != null && c.moveToNext()) {
+                        Wn w = new Wn();
+                        w.id = lng(c, "_id");
+                        w.title = str(c, "title");
+                        w.pkg = str(c, "package_name");
+                        w.poster = str(c, "poster_art_uri");
+                        if (w.poster == null) w.poster = str(c, "thumbnail_uri");
+                        w.intent = str(c, "intent_uri");
+                        w.pos = lng(c, "last_playback_position_millis");
+                        w.dur = lng(c, "duration_millis");
+                        w.when = lng(c, "last_engagement_time_utc_millis");
+                        int bi = c.getColumnIndex("browsable");
+                        if (bi >= 0 && c.getInt(bi) == 0) continue;
+                        if (w.title == null || w.title.isEmpty()) continue;
+                        list.add(w);
+                    }
+                } catch (Throwable ignored) {
+                    // Not allowed on this TV, or nothing shared: the row just stays hidden.
+                } finally {
+                    if (c != null) c.close();
+                }
+                Collections.sort(list, new Comparator<Wn>() {
+                    @Override public int compare(Wn x, Wn y) { return Long.compare(y.when, x.when); }
+                });
+                while (list.size() > COLS) list.remove(list.size() - 1);
+                for (Wn w : list) w.art = loadPoster(w.poster, artW, artH);
+                ui.post(new Runnable() { @Override public void run() { showWatchNext(list); } });
+            }
+        }).start();
+    }
+
+    private static String str(android.database.Cursor c, String col) {
+        int i = c.getColumnIndex(col);
+        return i < 0 || c.isNull(i) ? null : c.getString(i);
+    }
+
+    private static long lng(android.database.Cursor c, String col) {
+        int i = c.getColumnIndex(col);
+        return i < 0 || c.isNull(i) ? 0 : c.getLong(i);
+    }
+
+    private Bitmap loadPoster(String uri, int w, int h) {
+        if (uri == null) return null;
+        java.io.InputStream in = null;
+        try {
+            Uri u = Uri.parse(uri);
+            String sc = u.getScheme() == null ? "" : u.getScheme();
+            if (sc.startsWith("http")) {
+                HttpURLConnection con = (HttpURLConnection) new URL(uri).openConnection();
+                con.setConnectTimeout(8000);
+                con.setReadTimeout(10000);
+                in = con.getInputStream();
+            } else {
+                in = getContentResolver().openInputStream(u);
+            }
+            byte[] data = readAll(in);
+            BitmapFactory.Options o = new BitmapFactory.Options();
+            o.inJustDecodeBounds = true;
+            BitmapFactory.decodeByteArray(data, 0, data.length, o);
+            int sample = 1;
+            while (o.outWidth / (sample * 2) >= w && o.outHeight / (sample * 2) >= h) sample *= 2;
+            o = new BitmapFactory.Options();
+            o.inSampleSize = sample;
+            return BitmapFactory.decodeByteArray(data, 0, data.length, o);
+        } catch (Throwable t) {
+            return null;
+        } finally {
+            try { if (in != null) in.close(); } catch (Exception ignored) { }
+        }
+    }
+
+    private static byte[] readAll(java.io.InputStream in) throws Exception {
+        java.io.ByteArrayOutputStream b = new java.io.ByteArrayOutputStream();
+        byte[] buf = new byte[32768];
+        int n;
+        while ((n = in.read(buf)) > 0) {
+            b.write(buf, 0, n);
+            if (b.size() > 8 * 1024 * 1024) break;
+        }
+        return b.toByteArray();
+    }
+
+    private void showWatchNext(List<Wn> list) {
+        cwRow.removeAllViews();
+        for (Wn w : list) cwRow.addView(watchCell(w));
+        cwSection.setVisibility(list.isEmpty() ? View.GONE : View.VISIBLE);
+        muteClicks(cwRow);
+        updateUpLinks();
+    }
+
+    private View watchCell(final Wn w) {
+        FrameLayout t = baseTile(0xE62B2F38);
+        if (w.art != null) {
+            ImageView iv = new ImageView(this);
+            Bitmap r = roundedArt(new android.graphics.drawable.BitmapDrawable(getResources(), w.art),
+                    dp(tileW), dp(tileH), dp(14));
+            if (r != null) iv.setImageBitmap(r); else iv.setImageBitmap(w.art);
+            iv.setScaleType(ImageView.ScaleType.FIT_XY);
+            t.addView(iv, new FrameLayout.LayoutParams(-1, -1));
+        } else {
+            TextView tt = new TextView(this);
+            tt.setText(w.title);
+            tt.setTextColor(Color.WHITE);
+            tt.setTextSize(14);
+            tt.setGravity(Gravity.CENTER);
+            tt.setPadding(dp(12), 0, dp(12), 0);
+            tt.setMaxLines(3);
+            t.addView(tt, new FrameLayout.LayoutParams(-1, -1));
+        }
+        if (w.dur > 0 && w.pos > 0) {
+            float f = Math.max(0.03f, Math.min(1f, w.pos / (float) w.dur));
+            FrameLayout bar = new FrameLayout(this);
+            GradientDrawable track = new GradientDrawable();
+            track.setCornerRadius(dp(2));
+            track.setColor(0x59FFFFFF);
+            bar.setBackground(track);
+            View fill = new View(this);
+            GradientDrawable fb = new GradientDrawable();
+            fb.setCornerRadius(dp(2));
+            fb.setColor(0xFFFFFFFF);
+            fill.setBackground(fb);
+            int barW = dp(tileW) - dp(24);
+            bar.addView(fill, new FrameLayout.LayoutParams(Math.round(barW * f), -1));
+            FrameLayout.LayoutParams bl = new FrameLayout.LayoutParams(barW, dp(4), Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+            bl.setMargins(0, 0, 0, dp(9));
+            t.addView(bar, bl);
+        }
+        TextView label = nameLabel(w.title);
+        App owner = w.pkg == null ? null : apps.get(w.pkg);
+        App ta = owner;
+        if (ta == null) {
+            ta = new App();
+            ta.pkg = "wn:" + w.pkg;
+            ta.label = w.title;
+        }
+        Tag tag = new Tag(ta, false, "w:" + w.id, label);
+        tag.inner = t.getChildAt(0);
+        addOverlays(t, tag);
+        t.setTag(tag);
+        t.setContentDescription(w.title);
+        final App own = owner;
+        t.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(final View v) {
+                press(v, new Runnable() {
+                    @Override public void run() {
+                        try {
+                            Intent i = Intent.parseUri(w.intent, Intent.URI_INTENT_SCHEME);
+                            startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+                            if (own != null) addRecent(own.pkg);
+                        } catch (Exception e) {
+                            if (own != null) launch(own);
+                        }
+                    }
+                });
+            }
+        });
+        return cellShell(t, label);
+    }
+
+    // ---------- Folders ----------
+
+    private Map<String, List<String>> folders() {
+        Map<String, List<String>> m = new LinkedHashMap<>();
+        for (String line : prefs.getString("folders", "").split("\n")) {
+            int tab = line.indexOf('\t');
+            if (tab <= 0) continue;
+            List<String> l = new ArrayList<>();
+            for (String p : line.substring(tab + 1).split(",")) if (!p.isEmpty()) l.add(p);
+            m.put(line.substring(0, tab), l);
+        }
+        return m;
+    }
+
+    private void saveFolders(Map<String, List<String>> m) {
+        StringBuilder sb = new StringBuilder();
+        for (Map.Entry<String, List<String>> e : m.entrySet()) {
+            if (e.getValue().isEmpty()) continue;
+            sb.append(e.getKey().replace("\t", " ").replace("\n", " ")).append('\t')
+                    .append(TextUtils.join(",", e.getValue())).append('\n');
+        }
+        prefs.edit().putString("folders", sb.toString()).apply();
+    }
+
+    private View folderCell(final String name, List<App> members) {
+        FrameLayout t = baseTile(0xE62B2F38);
+        LinearLayout grid = new LinearLayout(this);
+        grid.setOrientation(LinearLayout.VERTICAL);
+        grid.setGravity(Gravity.CENTER);
+        int ic = dp(tileH / 3);
+        for (int r = 0; r < 2; r++) {
+            LinearLayout line = new LinearLayout(this);
+            line.setOrientation(LinearLayout.HORIZONTAL);
+            line.setGravity(Gravity.CENTER);
+            for (int k = 0; k < 2; k++) {
+                int idx = r * 2 + k;
+                ImageView iv = new ImageView(this);
+                if (idx < members.size()) iv.setImageDrawable(members.get(idx).icon);
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ic, ic);
+                lp.setMargins(dp(4), dp(3), dp(4), dp(3));
+                line.addView(iv, lp);
+            }
+            grid.addView(line);
+        }
+        t.addView(grid, new FrameLayout.LayoutParams(-1, -1));
+        TextView label = nameLabel(name);
+        App fa = new App();
+        fa.pkg = "folder:" + name;
+        fa.label = name;
+        fa.icon = getDrawable(drawable("ic_folder"));
+        Tag tag = new Tag(fa, false, "a:folder:" + name, label);
+        tag.inner = t.getChildAt(0);
+        addOverlays(t, tag);
+        t.setTag(tag);
+        t.setContentDescription("Folder " + name);
+        t.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(final View v) {
+                press(v, new Runnable() { @Override public void run() { openFolderPanel(name); } });
+            }
+        });
+        t.setOnLongClickListener(new View.OnLongClickListener() {
+            @Override public boolean onLongClick(View v) { folderOptions(name); return true; }
+        });
+        return cellShell(t, label);
+    }
+
+    private void addToFolder(final App a) {
+        final Map<String, List<String>> m = folders();
+        final List<String> names = new ArrayList<>(m.keySet());
+        List<String> items = new ArrayList<>(names);
+        items.add("New folder…");
+        new AlertDialog.Builder(this)
+                .setTitle("Add " + a.label + " to")
+                .setItems(items.toArray(new String[0]), new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface d, int which) {
+                        if (which < names.size()) {
+                            putInFolder(a.pkg, names.get(which));
+                        } else {
+                            askText("New folder", "Streaming", "", new TextResult() {
+                                @Override public void done(String text) { putInFolder(a.pkg, text); }
+                            });
+                        }
+                    }
+                })
+                .show();
+    }
+
+    private void putInFolder(String pkg, String folder) {
+        Map<String, List<String>> m = folders();
+        for (List<String> l : m.values()) l.remove(pkg);
+        List<String> l = m.get(folder);
+        if (l == null) { l = new ArrayList<>(); m.put(folder, l); }
+        l.add(pkg);
+        saveFolders(m);
+        focusKey = "a:folder:" + folder;
+        render();
+        Toast.makeText(this, "Added to " + folder, Toast.LENGTH_SHORT).show();
+    }
+
+    private void removeFromFolder(String pkg) {
+        Map<String, List<String>> m = folders();
+        for (List<String> l : m.values()) l.remove(pkg);
+        saveFolders(m);
+        String f = openFolder;
+        closeFolderPanel(false);
+        render();
+        if (f != null && folders().containsKey(f)) openFolderPanel(f);
+    }
+
+    private void folderOptions(final String name) {
+        new AlertDialog.Builder(this)
+                .setTitle(name)
+                .setItems(new String[]{"Rename folder", "Remove folder (apps go back to All apps)"},
+                        new DialogInterface.OnClickListener() {
+                            @Override public void onClick(DialogInterface d, int which) {
+                                final Map<String, List<String>> m = folders();
+                                if (which == 0) {
+                                    askText("Rename folder", name, name, new TextResult() {
+                                        @Override public void done(String text) {
+                                            Map<String, List<String>> out = new LinkedHashMap<>();
+                                            for (Map.Entry<String, List<String>> e : m.entrySet()) {
+                                                out.put(e.getKey().equals(name) ? text : e.getKey(), e.getValue());
+                                            }
+                                            saveFolders(out);
+                                            focusKey = "a:folder:" + text;
+                                            render();
+                                        }
+                                    });
+                                } else {
+                                    m.remove(name);
+                                    saveFolders(m);
+                                    focusKey = null;
+                                    render();
+                                }
+                            }
+                        })
+                .show();
+    }
+
+    interface TextResult { void done(String text); }
+
+    private void askText(String title, String hint, String value, final TextResult result) {
+        final EditText field = new EditText(this);
+        field.setHint(hint);
+        field.setText(value);
+        field.setSelectAllOnFocus(true);
+        field.setSingleLine(true);
+        field.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_FLAG_CAP_WORDS);
+        FrameLayout box = new FrameLayout(this);
+        box.setPadding(dp(20), dp(8), dp(20), 0);
+        box.addView(field);
+        new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setView(box)
+                .setPositiveButton("Save", new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface d, int w) {
+                        String t = field.getText().toString().trim();
+                        if (!t.isEmpty()) result.done(t);
+                    }
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void buildFolderOverlay(FrameLayout outer) {
+        folderOverlay = new FrameLayout(this);
+        folderOverlay.setVisibility(View.GONE);
+        folderOverlay.setBackgroundColor(0x99000000);
+        folderPanel = new LinearLayout(this);
+        folderPanel.setOrientation(LinearLayout.VERTICAL);
+        folderPanel.setClipChildren(false);
+        folderPanel.setClipToPadding(false);
+        folderPanel.setPadding(dp(28), dp(22), dp(28), dp(24));
+        GradientDrawable bg = new GradientDrawable();
+        bg.setCornerRadius(dp(28));
+        bg.setColor(0xF0171A21);
+        folderPanel.setBackground(bg);
+        folderTitle = new TextView(this);
+        folderTitle.setTextSize(22);
+        folderTitle.setTextColor(Color.WHITE);
+        folderTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        folderTitle.setPadding(dp(gap / 2), 0, 0, dp(10));
+        folderPanel.addView(folderTitle);
+        folderScroll = new ScrollView(this);
+        folderScroll.setVerticalScrollBarEnabled(false);
+        folderScroll.setClipChildren(false);
+        folderScroll.setClipToPadding(false);
+        folderGrid = new LinearLayout(this);
+        folderGrid.setOrientation(LinearLayout.VERTICAL);
+        folderGrid.setClipChildren(false);
+        folderGrid.setClipToPadding(false);
+        folderGrid.setPadding(0, dp(6), 0, dp(6));
+        folderScroll.addView(folderGrid, new ViewGroup.LayoutParams(-1, -2));
+        folderPanel.addView(folderScroll, new LinearLayout.LayoutParams(-2, -2));
+        folderOverlay.addView(folderPanel, new FrameLayout.LayoutParams(-2, -2, Gravity.CENTER));
+        outer.addView(folderOverlay, new FrameLayout.LayoutParams(-1, -1));
+    }
+
+    private void openFolderPanel(String name) {
+        List<String> pk = folders().get(name);
+        if (pk == null) return;
+        openFolder = name;
+        folderTitle.setText(name);
+        folderGrid.removeAllViews();
+        Set<String> hide = hidden();
+        LinearLayout row = null;
+        int n = 0, per = 4;
+        for (String p : pk) {
+            App a = apps.get(p);
+            if (a == null || hide.contains(p)) continue;
+            if (n % per == 0) {
+                row = new LinearLayout(this);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                row.setClipChildren(false);
+                row.setClipToPadding(false);
+                folderGrid.addView(row);
+            }
+            row.addView(cell(a, false, "d:"));
+            n++;
+        }
+        int rows = (n + per - 1) / per;
+        int maxH = (int) (getResources().getDisplayMetrics().heightPixels * 0.62f);
+        folderScroll.getLayoutParams().height = rows > 2 ? maxH : ViewGroup.LayoutParams.WRAP_CONTENT;
+        muteClicks(folderOverlay);
+        mainRoot.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
+        folderOverlay.setVisibility(View.VISIBLE);
+        folderOverlay.setAlpha(0f);
+        folderOverlay.animate().alpha(1f).setDuration(220).start();
+        folderPanel.setScaleX(0.94f);
+        folderPanel.setScaleY(0.94f);
+        folderPanel.animate().scaleX(1f).scaleY(1f).setInterpolator(GLIDE).setDuration(420).start();
+        folderScroll.scrollTo(0, 0);
+        folderPanel.post(new Runnable() {
+            @Override public void run() {
+                int[] loc = new int[2];
+                folderPanel.getLocationOnScreen(loc);
+                Drawable g = glassFor("folder:" + folderPanel.getWidth() + "x" + folderPanel.getHeight(),
+                        loc[0], loc[1], folderPanel.getWidth(), folderPanel.getHeight(),
+                        new float[]{dp(28), dp(28), dp(28), dp(28)});
+                if (g != null) folderPanel.setBackground(g);
+                if (folderGrid.getChildCount() > 0) {
+                    View first = ((ViewGroup) ((ViewGroup) folderGrid.getChildAt(0)).getChildAt(0)).getChildAt(0);
+                    first.requestFocus();
+                }
+            }
+        });
+    }
+
+    private void closeFolderPanel(boolean focusTile) {
+        if (openFolder == null) return;
+        String name = openFolder;
+        openFolder = null;
+        folderOverlay.animate().cancel();
+        folderOverlay.setVisibility(View.GONE);
+        folderGrid.removeAllViews();
+        mainRoot.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS);
+        if (focusTile) {
+            View t = findByKey(new ViewGroup[]{allGrid}, "a:folder:" + name);
+            if (t != null) t.requestFocus();
+        }
+    }
+
+    // ---------- Glass ----------
+
+    /** A frosted panel background cut from the current wallpaper. Made once per wallpaper. */
+    private Drawable glassFor(String key, int x, int y, int w, int h, float[] radii) {
+        if (basePhoto == null) return null;
+        if (glassPhoto != basePhoto) { glassCache.clear(); glassPhoto = basePhoto; }
+        String k = key + "@" + x + "," + y;
+        Drawable d = glassCache.get(k);
+        if (d == null) {
+            d = Glass.make(getResources(), basePhoto, getResources().getDisplayMetrics().widthPixels,
+                    getResources().getDisplayMetrics().heightPixels, x, y, w, h, radii);
+            if (d != null) glassCache.put(k, d);
+        }
+        return d;
+    }
+
+    // ---------- Icon packs ----------
+
+    private void chooseIconPack() {
+        final Map<String, String> packs = IconPack.installed(pm);
+        final List<String> pkgs = new ArrayList<>(packs.keySet());
+        List<String> names = new ArrayList<>();
+        String cur = prefs.getString("icon_pack", null);
+        names.add((cur == null ? "✓  " : "") + "None (the apps' own icons)");
+        for (String p : pkgs) names.add((p.equals(cur) ? "✓  " : "") + packs.get(p));
+        if (pkgs.isEmpty()) names.add("No icon packs installed. Install one (e.g. from Aurora Store) and come back.");
+        new AlertDialog.Builder(this)
+                .setTitle("Icon pack for the dock")
+                .setItems(names.toArray(new String[0]), new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface d, int which) {
+                        if (which == 0) {
+                            prefs.edit().remove("icon_pack").apply();
+                            iconPack = null;
+                            render();
+                        } else if (which - 1 < pkgs.size()) {
+                            String p = pkgs.get(which - 1);
+                            prefs.edit().putString("icon_pack", p).apply();
+                            Toast.makeText(MainActivity.this, "Loading " + packs.get(p) + "…", Toast.LENGTH_SHORT).show();
+                            loadIconPack(p);
+                        }
+                    }
+                })
+                .show();
+    }
+
+    private void loadIconPack(final String pkg) {
+        new Thread(new Runnable() {
+            @Override public void run() {
+                IconPack p = null;
+                try { p = new IconPack(pm, pkg); } catch (Throwable ignored) { }
+                final IconPack fp = p;
+                ui.post(new Runnable() {
+                    @Override public void run() {
+                        iconPack = fp;
+                        if (fp == null) {
+                            prefs.edit().remove("icon_pack").apply();
+                            Toast.makeText(MainActivity.this, "Couldn't read that icon pack", Toast.LENGTH_SHORT).show();
+                        }
+                        render();
+                    }
+                });
+            }
+        }).start();
+    }
+
+    // ---------- Send from Phone ----------
+
+    private void sendFromPhone() {
+        if (phoneUpload != null) phoneUpload.stop();
+        final AlertDialog[] dlg = new AlertDialog[1];
+        final boolean[] got = new boolean[1];
+        phoneUpload = new PhoneUpload(Wallpapers.phoneFile(this), new PhoneUpload.Callback() {
+            @Override public void onPhoto(File photo) {
+                got[0] = true;
+                if (dlg[0] != null) dlg[0].dismiss();
+                phoneUpload = null;
+                wallpapers.setMode(Wallpapers.MODE_PHONE);
+                wallpapers.refresh(true);
+                Toast.makeText(MainActivity.this, "Got it! Setting your photo as the wallpaper.", Toast.LENGTH_LONG).show();
+            }
+            @Override public void onError(String message) {
+                Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show();
+            }
+        });
+        String url = phoneUpload.start();
+        if (url == null) {
+            phoneUpload = null;
+            Toast.makeText(this, "Connect the TV to Wi-Fi first, then try again.", Toast.LENGTH_LONG).show();
+            return;
+        }
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(24), dp(8), dp(24), dp(8));
+        TextView how = new TextView(this);
+        how.setText("On your phone (on the same Wi-Fi), open this in the browser:");
+        how.setTextSize(15);
+        box.addView(how);
+        TextView link = new TextView(this);
+        link.setText(url.replace("http://", ""));
+        link.setTextSize(26);
+        link.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        link.setPadding(0, dp(12), 0, dp(12));
+        box.addView(link);
+        TextView note = new TextView(this);
+        note.setText("Pick a photo and it becomes your wallpaper. The link works once, for 10 minutes.");
+        note.setTextSize(13);
+        note.setAlpha(0.75f);
+        box.addView(note);
+        dlg[0] = new AlertDialog.Builder(this)
+                .setTitle("Send a photo from your phone")
+                .setView(box)
+                .setNegativeButton("Close", null)
+                .create();
+        dlg[0].setOnDismissListener(new DialogInterface.OnDismissListener() {
+            @Override public void onDismiss(DialogInterface d) {
+                if (!got[0] && phoneUpload != null) { phoneUpload.stop(); phoneUpload = null; }
+            }
+        });
+        dlg[0].show();
+    }
+
+    // ---------- Button remapping ----------
+
+    private boolean remapEnabled() {
+        String s = Settings.Secure.getString(getContentResolver(), "enabled_accessibility_services");
+        return s != null && s.contains(getPackageName() + "/");
+    }
+
+    private List<Integer> remapKeys() {
+        List<Integer> l = new ArrayList<>();
+        for (String k : prefs.getString("remap_keys", "").split(",")) {
+            try { if (!k.isEmpty()) l.add(Integer.parseInt(k)); } catch (Exception ignored) { }
+        }
+        return l;
+    }
+
+    private void saveRemapKeys(List<Integer> l) {
+        prefs.edit().putString("remap_keys", TextUtils.join(",", l)).apply();
+    }
+
+    private static String keyName(int k) {
+        String n = KeyEvent.keyCodeToString(k);
+        if (n.startsWith("KEYCODE_")) n = n.substring(8);
+        if (n.matches("\\d+")) return "Button " + n;
+        StringBuilder sb = new StringBuilder();
+        for (String w : n.split("_")) {
+            if (w.isEmpty()) continue;
+            if (sb.length() > 0) sb.append(' ');
+            sb.append(w.charAt(0)).append(w.substring(1).toLowerCase(java.util.Locale.US));
+        }
+        return sb.toString();
+    }
+
+    private String targetLabel(String pkg) {
+        App a = apps.get(pkg);
+        return a != null ? a.label : pkg;
+    }
+
+    private void remapMenu() {
+        if (!remapEnabled()) {
+            new AlertDialog.Builder(this)
+                    .setTitle("Turn on button remapping")
+                    .setMessage("TV Home needs accessibility access to see your remote's buttons. It only acts on the "
+                            + "buttons you choose and can't see the screen.\n\nTurn on \"TV Home button remapping\" in "
+                            + "Settings → Accessibility.\n\nIf it isn't listed there, run this from your computer:\n"
+                            + "adb shell settings put secure enabled_accessibility_services "
+                            + getPackageName() + "/" + RemapService.class.getName()
+                            + "\nadb shell settings put secure accessibility_enabled 1")
+                    .setPositiveButton("Open Accessibility", new DialogInterface.OnClickListener() {
+                        @Override public void onClick(DialogInterface d, int w) {
+                            startOr(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
+                        }
+                    })
+                    .setNegativeButton("Cancel", null)
+                    .show();
+            return;
+        }
+        final List<Integer> keys = remapKeys();
+        List<String> items = new ArrayList<>();
+        for (int k : keys) items.add(keyName(k) + "  →  " + targetLabel(prefs.getString("remap_" + k, "")));
+        items.add("+  Remap a button");
+        new AlertDialog.Builder(this)
+                .setTitle("Remap buttons")
+                .setItems(items.toArray(new String[0]), new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface d, int which) {
+                        if (which == keys.size()) { captureKey(); return; }
+                        final int k = keys.get(which);
+                        new AlertDialog.Builder(MainActivity.this)
+                                .setTitle(keyName(k))
+                                .setItems(new String[]{"Change what it opens", "Back to normal"},
+                                        new DialogInterface.OnClickListener() {
+                                            @Override public void onClick(DialogInterface d2, int w) {
+                                                if (w == 0) chooseRemapTarget(k);
+                                                else {
+                                                    keys.remove(Integer.valueOf(k));
+                                                    saveRemapKeys(keys);
+                                                    prefs.edit().remove("remap_" + k).apply();
+                                                }
+                                            }
+                                        })
+                                .show();
+                    }
+                })
+                .show();
+    }
+
+    private void captureKey() {
+        prefs.edit().remove("remap_captured").putBoolean("remap_capture", true).apply();
+        final AlertDialog d = new AlertDialog.Builder(this)
+                .setTitle("Press a button on your remote")
+                .setMessage("Press the button you want to change, like the Netflix or Prime Video button.\n\n"
+                        + "Arrows, OK, Back, Home, volume and power always keep their normal job.")
+                .setNegativeButton("Cancel", null)
+                .create();
+        remapListener = new SharedPreferences.OnSharedPreferenceChangeListener() {
+            @Override public void onSharedPreferenceChanged(SharedPreferences sp, String key) {
+                if (!"remap_captured".equals(key) || !sp.contains("remap_captured")) return;
+                final int k = sp.getInt("remap_captured", -1);
+                sp.unregisterOnSharedPreferenceChangeListener(this);
+                remapListener = null;
+                ui.post(new Runnable() {
+                    @Override public void run() {
+                        d.dismiss();
+                        if (k > 0) chooseRemapTarget(k);
+                    }
+                });
+            }
+        };
+        prefs.registerOnSharedPreferenceChangeListener(remapListener);
+        d.setOnDismissListener(new DialogInterface.OnDismissListener() {
+            @Override public void onDismiss(DialogInterface di) {
+                prefs.edit().putBoolean("remap_capture", false).apply();
+                if (remapListener != null) {
+                    prefs.unregisterOnSharedPreferenceChangeListener(remapListener);
+                    remapListener = null;
+                }
+            }
+        });
+        d.show();
+    }
+
+    private void chooseRemapTarget(final int k) {
+        final List<App> targets = new ArrayList<>();
+        for (String p : favs()) { App a = apps.get(p); if (a != null) targets.add(a); }
+        List<App> rest = new ArrayList<>(apps.values());
+        Collections.sort(rest, new Comparator<App>() {
+            @Override public int compare(App x, App y) { return x.label.compareToIgnoreCase(y.label); }
+        });
+        for (App a : rest) if (!targets.contains(a)) targets.add(a);
+        String[] names = new String[targets.size()];
+        for (int i = 0; i < names.length; i++) names[i] = targets.get(i).label;
+        new AlertDialog.Builder(this)
+                .setTitle(keyName(k) + " opens…")
+                .setItems(names, new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface d, int which) {
+                        App a = targets.get(which);
+                        prefs.edit().putString("remap_" + k, a.pkg).apply();
+                        List<Integer> keys = remapKeys();
+                        if (!keys.contains(k)) keys.add(k);
+                        saveRemapKeys(keys);
+                        Toast.makeText(MainActivity.this, keyName(k) + " now opens " + a.label, Toast.LENGTH_LONG).show();
+                    }
+                })
+                .show();
+    }
+
+
+    // ================================================================== 6.22: Settings, icon styles
+
+    private App settingsApp() {
+        if (settingsApp == null) {
+            settingsApp = new App();
+            settingsApp.pkg = "tvhome:settings";
+            settingsApp.label = "Settings";
+            settingsApp.icon = new android.graphics.drawable.BitmapDrawable(getResources(), Art.gearTile(dp(96)));
+            settingsApp.glow1 = 0xFF5C6370;
+            settingsApp.glow2 = 0xFF3A3F48;
+            settingsApp.colorsReady = true;
+        }
+        return settingsApp;
+    }
+
+    private boolean isSettingsCell(View cell) {
+        if (!(cell instanceof ViewGroup) || ((ViewGroup) cell).getChildCount() == 0) return false;
+        Object t = ((ViewGroup) cell).getChildAt(0).getTag();
+        return t instanceof Tag && ((Tag) t).app != null && "tvhome:settings".equals(((Tag) t).app.pkg);
+    }
+
+    /** Clips a finished square of art to the dock's rounded shape. */
+    private static Bitmap roundOff(Bitmap art, int size) {
+        Bitmap out = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
+        Canvas oc = new Canvas(out);
+        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+        p.setShader(new BitmapShader(art, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP));
+        float r = size * 0.23f;
+        oc.drawRoundRect(new RectF(0, 0, size, size), r, r, p);
+        art.recycle();
+        return out;
+    }
+
+    static final String[] ICON_STYLES = {"Original", "Light (Apple TV)", "Dark", "Glass"};
+
+    /**
+     * Icon styles: each app's own logo on a uniform tile, so the dock looks like one set.
+     * If a logo would vanish on the tile (white on Light, black on Dark), that app keeps its own colours.
+     */
+    private boolean styledIcon(Canvas c, App a, Drawable d, boolean adaptive, Drawable sharp, int size, int style) {
+        int tile = style == 1 ? 0xFFF5F6F8 : style == 2 ? 0xFF1C1E24 : 0x47FFFFFF;
+        Drawable glyph = null;
+        boolean full = false;
+        if (adaptive) {
+            glyph = ((android.graphics.drawable.AdaptiveIconDrawable) d).getForeground();
+            full = true;
+        } else if (sharp != null) {
+            Drawable.ConstantState cs = sharp.getConstantState();
+            glyph = cs != null ? cs.newDrawable(getResources()).mutate() : sharp;
+        } else if (a.banner == null && a.icon != null) {
+            glyph = a.icon;
+        }
+        if (glyph == null) return false;
+        float lum = brightness(glyph);
+        if ((style == 1 && lum > 0.82f) || (style == 2 && lum < 0.18f)) return false;
+        c.drawColor(tile);
+        if (style == 3) {
+            Paint sheen = new Paint();
+            sheen.setShader(new LinearGradient(0, 0, 0, size * 0.55f, 0x33FFFFFF, 0x00FFFFFF, Shader.TileMode.CLAMP));
+            c.drawRect(0, 0, size, size * 0.55f, sheen);
+        }
+        if (full) {
+            int ext = size / 4;
+            glyph.setBounds(-ext, -ext, size + ext, size + ext);
+        } else {
+            int iw = Math.round(size * 0.66f);
+            glyph.setBounds((size - iw) / 2, (size - iw) / 2, (size + iw) / 2, (size + iw) / 2);
+        }
+        glyph.draw(c);
+        return true;
+    }
+
+    /** How light a logo's visible pixels are, 0 (black) to 1 (white). */
+    private static float brightness(Drawable d) {
+        try {
+            Bitmap b = Bitmap.createBitmap(24, 24, Bitmap.Config.ARGB_8888);
+            Canvas c = new Canvas(b);
+            d.setBounds(-6, -6, 30, 30);
+            d.draw(c);
+            double sum = 0, n = 0;
+            for (int y = 0; y < 24; y++) for (int x = 0; x < 24; x++) {
+                int px = b.getPixel(x, y);
+                int al = Color.alpha(px);
+                if (al < 100) continue;
+                sum += (0.299 * Color.red(px) + 0.587 * Color.green(px) + 0.114 * Color.blue(px)) / 255.0;
+                n++;
+            }
+            b.recycle();
+            return n == 0 ? 0.5f : (float) (sum / n);
+        } catch (Throwable t) {
+            return 0.5f;
+        }
+    }
+
+    // ---------- Settings screen (Classic style or Glass style) ----------
+
+    private boolean glassSettings() { return "glass".equals(prefs.getString("settings_style", "classic")); }
+
+    private void buildSettings(FrameLayout outer) {
+        settingsOverlay = new FrameLayout(this);
+        settingsOverlay.setVisibility(View.GONE);
+        settingsBg = new ImageView(this);
+        settingsBg.setScaleType(ImageView.ScaleType.FIT_XY);
+        settingsOverlay.addView(settingsBg, new FrameLayout.LayoutParams(-1, -1));
+
+        LinearLayout split = new LinearLayout(this);
+        split.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout left = new LinearLayout(this);
+        left.setOrientation(LinearLayout.VERTICAL);
+        left.setGravity(Gravity.CENTER);
+        ImageView gear = new ImageView(this);
+        gear.setImageBitmap(Art.gear(dp(150)));
+        left.addView(gear, new LinearLayout.LayoutParams(dp(120), dp(120)));
+        TextView big = new TextView(this);
+        big.setText("Settings");
+        big.setTextSize(38);
+        big.setTextColor(Color.WHITE);
+        big.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
+        big.setPadding(0, dp(26), 0, dp(4));
+        big.setGravity(Gravity.CENTER_HORIZONTAL);
+        left.addView(big, new LinearLayout.LayoutParams(-2, -2));
+        TextView sub = new TextView(this);
+        sub.setText("TV Home");
+        sub.setTextSize(16);
+        sub.setTextColor(0x99FFFFFF);
+        sub.setGravity(Gravity.CENTER_HORIZONTAL);
+        left.addView(sub, new LinearLayout.LayoutParams(-2, -2));
+        split.addView(left, new LinearLayout.LayoutParams(0, -1, 1f));
+
+        LinearLayout right = new LinearLayout(this);
+        right.setOrientation(LinearLayout.VERTICAL);
+        right.setPadding(0, dp(40), dp(56), dp(24));
+        right.setClipChildren(false);
+        right.setClipToPadding(false);
+        settingsTitle = new TextView(this);
+        settingsTitle.setTextSize(20);
+        settingsTitle.setTextColor(Color.WHITE);
+        settingsTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
+        settingsTitle.setPadding(dp(20), 0, 0, dp(14));
+        right.addView(settingsTitle);
+        settingsScroll = new ScrollView(this);
+        settingsScroll.setVerticalScrollBarEnabled(false);
+        settingsScroll.setClipChildren(false);
+        settingsScroll.setClipToPadding(false);
+        settingsScroll.setPadding(dp(8), dp(4), dp(8), dp(24));
+        settingsList = new LinearLayout(this);
+        settingsList.setOrientation(LinearLayout.VERTICAL);
+        settingsList.setClipChildren(false);
+        settingsList.setClipToPadding(false);
+        settingsScroll.addView(settingsList, new ViewGroup.LayoutParams(-1, -2));
+        right.addView(settingsScroll, new LinearLayout.LayoutParams(-1, 0, 1f));
+        split.addView(right, new LinearLayout.LayoutParams(0, -1, 1.25f));
+        settingsOverlay.addView(split, new FrameLayout.LayoutParams(-1, -1));
+        outer.addView(settingsOverlay, new FrameLayout.LayoutParams(-1, -1));
+    }
+
+    private void openSettings() {
+        if (!settingsOpen) {
+            settingsOpen = true;
+            if (glassSettings()) {
+                settingsBg.setImageDrawable(ccBackdrop());
+                settingsOverlay.setBackgroundColor(0);
+            } else {
+                settingsBg.setImageDrawable(null);
+                settingsOverlay.setBackgroundColor(0xFF0B0B0F);
+            }
+            mainRoot.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
+            settingsOverlay.setVisibility(View.VISIBLE);
+            settingsOverlay.setAlpha(0f);
+            settingsOverlay.animate().alpha(1f).setInterpolator(EASE).setDuration(260).withEndAction(new Runnable() {
+                @Override public void run() { if (settingsOpen) mainRoot.setVisibility(View.INVISIBLE); }
+            }).start();
+        }
+        pageStack.clear();
+        showPage(new Runnable() { @Override public void run() { pageMain(); } }, "");
+    }
+
+    private void closeSettings(boolean focusDock) {
+        if (!settingsOpen) return;
+        settingsOpen = false;
+        pageStack.clear();
+        mainRoot.setVisibility(View.VISIBLE);
+        mainRoot.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS);
+        settingsOverlay.animate().cancel();
+        settingsOverlay.animate().alpha(0f).setDuration(200).withEndAction(new Runnable() {
+            @Override public void run() {
+                if (!settingsOpen) { settingsOverlay.setVisibility(View.GONE); settingsBg.setImageDrawable(null); }
+            }
+        }).start();
+        if (focusDock) {
+            View f = findByKey(new ViewGroup[]{favRow}, "f:tvhome:settings");
+            if (f != null) f.requestFocus(); else if (pillView != null) pillView.requestFocus();
+        }
+    }
+
+    private void showPage(Runnable page, String title) {
+        pageStack.add(new Object[]{page, title, 0});
+        renderPage(0);
+    }
+
+    private void settingsBack() {
+        if (pageStack.size() <= 1) { closeSettings(true); return; }
+        pageStack.remove(pageStack.size() - 1);
+        renderPage((Integer) pageStack.get(pageStack.size() - 1)[2]);
+    }
+
+    /** Rebuilds the current page (to show new values) keeping the selection on the same row. */
+    private void refreshPage() {
+        int idx = 0;
+        View f = getCurrentFocus();
+        if (f != null && f.getParent() == settingsList) idx = settingsList.indexOfChild(f);
+        renderPage(idx);
+    }
+
+    private void renderPage(int focusIndex) {
+        if (pageStack.isEmpty()) return;
+        Object[] top = pageStack.get(pageStack.size() - 1);
+        String title = (String) top[1];
+        settingsTitle.setText(title);
+        settingsTitle.setVisibility(title.isEmpty() ? View.GONE : View.VISIBLE);
+        settingsList.removeAllViews();
+        ((Runnable) top[0]).run();
+        muteClicks(settingsList);
+        settingsList.setAlpha(0f);
+        settingsList.setTranslationX(dp(24));
+        settingsList.animate().alpha(1f).translationX(0).setInterpolator(GLIDE).setDuration(320).start();
+        final int fi = Math.max(0, Math.min(focusIndex, settingsList.getChildCount() - 1));
+        settingsList.post(new Runnable() {
+            @Override public void run() {
+                if (settingsList.getChildCount() > 0) settingsList.getChildAt(fi).requestFocus();
+            }
+        });
+    }
+
+    /** Opens a sub-page, remembering which row you came from. */
+    private void subPage(String title, Runnable page) {
+        View f = getCurrentFocus();
+        if (f != null && f.getParent() == settingsList && !pageStack.isEmpty()) {
+            pageStack.get(pageStack.size() - 1)[2] = settingsList.indexOfChild(f);
+        }
+        showPage(page, title);
+    }
+
+    private void row(String icon, int tint, String title, String value, boolean chevron, final Runnable action) {
+        final boolean glass = glassSettings();
+        final LinearLayout r = new LinearLayout(this);
+        r.setOrientation(LinearLayout.HORIZONTAL);
+        r.setGravity(Gravity.CENTER_VERTICAL);
+        r.setPadding(dp(12), 0, dp(18), 0);
+        final GradientDrawable bg = new GradientDrawable();
+        bg.setCornerRadius(dp(18));
+        final int rest = glass ? 0x33FFFFFF : 0xFF1F2026;
+        bg.setColor(rest);
+        if (glass) bg.setStroke(Math.max(1, dp(1)), 0x26FFFFFF);
+        r.setBackground(bg);
+        r.setFocusable(true);
+        r.setClickable(true);
+        if (Build.VERSION.SDK_INT >= 26) r.setDefaultFocusHighlightEnabled(false);
+
+        if (icon != null) {
+            FrameLayout box = new FrameLayout(this);
+            GradientDrawable ib = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
+                    new int[]{0xFF34373F, 0xFF1D1F24});
+            ib.setCornerRadius(dp(8));
+            box.setBackground(ib);
+            ImageView ic = new ImageView(this);
+            ic.setImageResource(drawable(icon));
+            ic.setColorFilter(tint);
+            box.addView(ic, new FrameLayout.LayoutParams(dp(18), dp(18), Gravity.CENTER));
+            LinearLayout.LayoutParams bl = new LinearLayout.LayoutParams(dp(32), dp(32));
+            bl.setMargins(0, 0, dp(14), 0);
+            r.addView(box, bl);
+        } else {
+            r.setPadding(dp(24), 0, dp(18), 0);
+        }
+        final TextView t = new TextView(this);
+        t.setText(title);
+        t.setTextSize(17);
+        t.setTextColor(Color.WHITE);
+        t.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        t.setSingleLine(true);
+        r.addView(t, new LinearLayout.LayoutParams(0, -2, 1f));
+        final TextView v = new TextView(this);
+        v.setText(value == null ? "" : value);
+        v.setTextSize(15);
+        v.setTextColor(0x8CFFFFFF);
+        v.setSingleLine(true);
+        v.setEllipsize(TextUtils.TruncateAt.END);
+        v.setMaxWidth(dp(220));
+        r.addView(v);
+        final TextView ch = new TextView(this);
+        ch.setText(chevron ? "  ›" : "");
+        ch.setTextSize(20);
+        ch.setTextColor(0x8CFFFFFF);
+        r.addView(ch);
+
+        r.setOnFocusChangeListener(new View.OnFocusChangeListener() {
+            @Override public void onFocusChange(View view, boolean has) {
+                bg.setColor(has ? 0xFFF2F3F5 : rest);
+                t.setTextColor(has ? 0xFF111317 : Color.WHITE);
+                v.setTextColor(has ? 0x99111317 : 0x8CFFFFFF);
+                ch.setTextColor(has ? 0x99111317 : 0x8CFFFFFF);
+                view.animate().scaleX(has ? 1.03f : 1f).scaleY(has ? 1.03f : 1f)
+                        .setInterpolator(has ? SPRING : EASE).setDuration(has ? 260 : 160).start();
+            }
+        });
+        r.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View view) { action.run(); }
+        });
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, dp(52));
+        lp.setMargins(0, 0, 0, dp(9));
+        settingsList.addView(r, lp);
+    }
+
+    /** A page of choices with a tick on the current one. */
+    private void choices(String[] options, int selected, final ChoiceResult result) {
+        for (int i = 0; i < options.length; i++) {
+            final int k = i;
+            row(null, 0, options[i], i == selected ? "✓" : "", false, new Runnable() {
+                @Override public void run() { result.chose(k); refreshPage(); }
+            });
+        }
+    }
+
+    interface ChoiceResult { void chose(int index); }
+
+    private void pageMain() {
+        String name = prefs.getString("user_name", "");
+        row("ic_wallpaper", 0xFF5AC8FA, "Appearance", "", true, new Runnable() {
+            @Override public void run() { subPage("Appearance", new Runnable() { @Override public void run() { pageAppearance(); } }); }
+        });
+        row("ic_person", 0xFFFF9F0A, "Profile", name.isEmpty() ? "Add your name" : name, true, new Runnable() {
+            @Override public void run() { askName(); }
+        });
+        row("ic_clock", 0xFFFFD60A, "StandBy", StandbyActivity.STYLES[prefs.getInt("standby_style", 0)], true, new Runnable() {
+            @Override public void run() { subPage("StandBy", new Runnable() { @Override public void run() { pageStandby(); } }); }
+        });
+        row("ic_remote", 0xFFD1D1D6, "Button Remap", "", true, new Runnable() {
+            @Override public void run() { remapMenu(); }
+        });
+        row("ic_apps", 0xFF8E8CFF, "Apps", "", true, new Runnable() {
+            @Override public void run() { subPage("Apps", new Runnable() { @Override public void run() { pageApps(); } }); }
+        });
+        row("ic_picture", 0xFF0A84FF, "Display", "", false, new Runnable() {
+            @Override public void run() { ccAction("Picture"); }
+        });
+        row("ic_sound", 0xFFFF375F, "Sound", "", false, new Runnable() {
+            @Override public void run() { ccAction("Sound"); }
+        });
+        row("ic_input", 0xFF30D158, "Inputs", "", false, new Runnable() {
+            @Override public void run() { ccAction("Inputs"); }
+        });
+        row("ic_tune", 0xFFBF5AF2, "Settings Style", glassSettings() ? "Glass UI" : "Classic UI", true, new Runnable() {
+            @Override public void run() { subPage("Settings Style", new Runnable() { @Override public void run() { pageStyle(); } }); }
+        });
+        row("gear", 0xFFD1D1D6, "All Settings", "", false, new Runnable() {
+            @Override public void run() { ccAction("All settings"); }
+        });
+    }
+
+    private void pageAppearance() {
+        String mode = wallpapers.mode();
+        String wp = Wallpapers.MODE_MINE.equals(mode) ? "My photos" : Wallpapers.MODE_PHONE.equals(mode) ? "From phone" : "Scenery";
+        String packLabel = "None";
+        String ipk = prefs.getString("icon_pack", null);
+        if (ipk != null) {
+            try { packLabel = pm.getApplicationLabel(pm.getApplicationInfo(ipk, 0)).toString(); } catch (Exception ignored) { }
+        }
+        row("ic_wallpaper", 0xFF5AC8FA, "Wallpaper", wp, true, new Runnable() {
+            @Override public void run() { subPage("Wallpaper", new Runnable() { @Override public void run() { pageWallpaper(); } }); }
+        });
+        row("ic_picture", 0xFFFF9F0A, "Colour", followColour() ? "Follows the app" : "Off", true, new Runnable() {
+            @Override public void run() {
+                subPage("Colour", new Runnable() {
+                    @Override public void run() {
+                        choices(new String[]{"Follow the selected app", "Off (plain photo)"}, followColour() ? 0 : 1, new ChoiceResult() {
+                            @Override public void chose(int k) {
+                                prefs.edit().putBoolean("follow_colour", k == 0).apply();
+                                if (k == 0) { App f = firstFavApp(); if (f != null) applyColour(f); }
+                                else { shownColour = 0; presentPhoto(0, 400); }
+                            }
+                        });
+                    }
+                });
+            }
+        });
+        row("ic_tune", 0xFF30D158, "Motion", smooth ? "Smooth" : "Full effects", true, new Runnable() {
+            @Override public void run() {
+                subPage("Motion", new Runnable() {
+                    @Override public void run() {
+                        choices(new String[]{"Smooth (best for this TV)", "Full effects (fades, colour glow)"}, smooth ? 0 : 1, new ChoiceResult() {
+                            @Override public void chose(int k) { setSmooth(k == 0); }
+                        });
+                    }
+                });
+            }
+        });
+        row("ic_apps", 0xFF8E8CFF, "Icon Style", ICON_STYLES[prefs.getInt("icon_style", 0)], true, new Runnable() {
+            @Override public void run() {
+                subPage("Icon Style", new Runnable() {
+                    @Override public void run() {
+                        choices(ICON_STYLES, prefs.getInt("icon_style", 0), new ChoiceResult() {
+                            @Override public void chose(int k) { prefs.edit().putInt("icon_style", k).apply(); render(); }
+                        });
+                    }
+                });
+            }
+        });
+        row("ic_folder", 0xFF64D2FF, "Icon Pack", packLabel, true, new Runnable() {
+            @Override public void run() { chooseIconPack(); }
+        });
+    }
+
+    private void pageWallpaper() {
+        String mode = wallpapers.mode();
+        int sel = Wallpapers.MODE_MINE.equals(mode) ? 1 : Wallpapers.MODE_PHONE.equals(mode) ? 2 : 0;
+        row(null, 0, "Scenery by time of day", sel == 0 ? "✓" : "", false, new Runnable() {
+            @Override public void run() { wallpapers.setMode(Wallpapers.MODE_SCENERY); wallpapers.refresh(true); refreshPage(); }
+        });
+        row(null, 0, "My photos", sel == 1 ? "✓" : "", false, new Runnable() {
+            @Override public void run() {
+                wallpapers.setMode(Wallpapers.MODE_MINE);
+                if (Build.VERSION.SDK_INT >= 23 && checkSelfPermission(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+                        != PackageManager.PERMISSION_GRANTED) {
+                    requestPermissions(new String[]{android.Manifest.permission.READ_EXTERNAL_STORAGE}, REQ_STORAGE);
+                } else {
+                    useMyPhotos();
+                }
+                refreshPage();
+            }
+        });
+        row(null, 0, "Send from phone…", sel == 2 ? "✓" : "", false, new Runnable() {
+            @Override public void run() { sendFromPhone(); }
+        });
+        row(null, 0, "Shuffle now", "", false, new Runnable() {
+            @Override public void run() {
+                Toast.makeText(MainActivity.this, "Finding a new wallpaper…", Toast.LENGTH_SHORT).show();
+                wallpapers.refresh(true);
+            }
+        });
+    }
+
+    private void pageStandby() {
+        choices(StandbyActivity.STYLES, prefs.getInt("standby_style", 0), new ChoiceResult() {
+            @Override public void chose(int k) { prefs.edit().putInt("standby_style", k).apply(); }
+        });
+        row("ic_clock", 0xFFFFD60A, "Show StandBy now", "", false, new Runnable() {
+            @Override public void run() { startActivity(new Intent(MainActivity.this, StandbyActivity.class)); }
+        });
+    }
+
+    private void pageApps() {
+        row("ic_download", 0xFF30D158, "Install Apps", "", true, new Runnable() {
+            @Override public void run() { ccAction("Install apps"); }
+        });
+        row("ic_hidden", 0xFFD1D1D6, "Hidden Apps", hidden().isEmpty() ? "None" : String.valueOf(hidden().size()), true, new Runnable() {
+            @Override public void run() { ccAction("Hidden apps"); }
+        });
+    }
+
+    private void pageStyle() {
+        choices(new String[]{"Glass UI", "Classic UI"}, glassSettings() ? 0 : 1, new ChoiceResult() {
+            @Override public void chose(int k) {
+                prefs.edit().putString("settings_style", k == 0 ? "glass" : "classic").apply();
+                if (k == 0) { settingsBg.setImageDrawable(ccBackdropUnderSettings()); settingsOverlay.setBackgroundColor(0); }
+                else { settingsBg.setImageDrawable(null); settingsOverlay.setBackgroundColor(0xFF0B0B0F); }
+            }
+        });
+    }
+
+    /** The home screen is hidden while Settings is open, so show it briefly to blur it. */
+    private Drawable ccBackdropUnderSettings() {
+        mainRoot.setVisibility(View.VISIBLE);
+        Drawable d = ccBackdrop();
+        mainRoot.setVisibility(View.INVISIBLE);
+        return d;
     }
 
     /** A slim rounded volume bar. */
@@ -3117,6 +4710,7 @@ public class MainActivity extends Activity {
     }
 
     private void showOptions(final App a, final boolean fav) {
+        if (a.pkg.startsWith("tvhome:")) return;
         final List<String> favs = favs();
         final boolean isFav = favs.contains(a.pkg);
         final Set<String> hidden = hidden();
@@ -3127,6 +4721,9 @@ public class MainActivity extends Activity {
         } else {
             items.add(isFav ? "Remove from favourites" : "Add to favourites");
         }
+        if (openFolder != null && folders().containsKey(openFolder)
+                && folders().get(openFolder).contains(a.pkg)) items.add("Remove from folder");
+        else if (a.inputId == null) items.add("Add to folder\u2026");
         items.add("Hide app");
         items.add(a.inputId != null ? "Rename" : "App info");
         if (!hidden.isEmpty()) items.add("Show hidden apps (" + hidden.size() + ")");
@@ -3157,6 +4754,10 @@ public class MainActivity extends Activity {
                             focusKey = null;
                             render();
                             Toast.makeText(MainActivity.this, a.label + " hidden", Toast.LENGTH_SHORT).show();
+                        } else if (c.equals("Add to folder\u2026")) {
+                            addToFolder(a);
+                        } else if (c.equals("Remove from folder")) {
+                            removeFromFolder(a.pkg);
                         } else if (c.equals("Rename")) {
                             renameInput(a);
                         } else if (c.equals("App info")) {
@@ -3233,6 +4834,9 @@ public class MainActivity extends Activity {
     }
 
     private void launch(App a) {
+        if ("tvhome:settings".equals(a.pkg)) { openSettings(); return; }
+        addRecent(a.pkg);
+        if (openFolder != null) closeFolderPanel(false);
         if (a.inputId != null) { switchInput(a); return; }
         countUse(a.pkg);
         Intent i = new Intent(Intent.ACTION_MAIN)

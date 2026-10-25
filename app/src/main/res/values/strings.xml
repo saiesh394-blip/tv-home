@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="remap_desc">Lets TV Home open the app you choose when you press a remote button you picked in Control Centre → Remap buttons. It only watches those buttons and can\'t see the screen.</string>
+    <string name="remap_label">TV Home button remapping</string>
+</resources>

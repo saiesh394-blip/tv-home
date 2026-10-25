@@ -9,6 +9,9 @@
     <!-- Lets the Bluetooth tile open Remotes & Accessories (granted at install, no prompt) -->
     <uses-permission android:name="android.permission.BLUETOOTH" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+    <!-- Continue Watching: read the Watch Next list that apps like YouTube share (Android asks once) -->
+    <uses-permission android:name="com.android.providers.tv.permission.READ_EPG_DATA" />
+    <uses-permission android:name="android.permission.READ_TV_LISTINGS" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <!-- Your own wallpapers from Pictures/TV Home -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
@@ -67,6 +70,25 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Button remapping: only the remote buttons you choose -->
+        <service
+            android:name=".RemapService"
+            android:exported="true"
+            android:label="@string/remap_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data android:name="android.accessibilityservice" android:resource="@xml/remap_service" />
+        </service>
+
+        <!-- Standby clock -->
+        <activity
+            android:name=".StandbyActivity"
+            android:exported="false"
+            android:screenOrientation="landscape"
+            android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen" />
 
         <!-- Screensaver -->
         <service
