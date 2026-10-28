@@ -4,11 +4,15 @@ An ad-free, minimal home screen for Android TV and Google TV, with an Apple TV-s
 
 Built for a Xiaomi Google TV with a modest graphics chip, so it's tuned to stay smooth on slower TVs.
 
-**Download:** [TVHome-6.24.apk](download/TVHome-6.24.apk) (open it, then click the download button on the right).
+**Download:** grab the latest `TVHome-x.y.apk` from the [download](download) folder.
 
 ## What it does
 
-- **Greeting:** "Good evening, *your name*", changing with the time of day, with the weather beside the clock. It asks your name on first launch (change it in **Controls → Appearance**).
+- **First-run setup:** a short welcome that asks your name and picture, then makes TV Home the Home app and gives it its permissions by itself, through the TV's own debugging connection. No computer needed (run it again from **Settings → Setup & Home App**).
+- **Greeting:** "Good evening, *your name*", changing with the time of day, with your profile picture beside the clock.
+- **Top Shelf:** big artwork behind the dock, like Apple TV. Choose popular **Movies & Shows** (with title logos, year, genre and rating; **Where to Watch** opens the TV's search) or **News** (Indian headlines from NDTV, The Times of India, The Hindu and The Indian Express). Cards change by themselves; Left/Right on the button flips through them. After 30 seconds without the remote, the rows and dock fade away so only the artwork shows. **Settings → Home Screen**.
+- **Weather:** a pill in the top-left corner with an icon and the temperature. Press OK for details: feels like, high and low, UV, air quality, humidity, wind, sunrise, sunset and the next six hours. Pick any city, or use the TV's location.
+- **App opening animation:** apps zoom out of their icon (or reveal, fade, rise or pop) at the speed you choose. **Settings → Appearance → App Opening**.
 - **Photo wallpaper:** free featured scenery from Wikimedia Commons that changes with the time of day, or your own photos.
 - **Mac-style dock:** your favourite apps along the bottom, magnifying as you move across them. The selected app's colour washes softly into the photo.
 - **All apps:** sorted by how often you use them. Hold OK on any app to add it to the dock, move it, hide it, or open App info.
@@ -32,17 +36,17 @@ Built for a Xiaomi Google TV with a modest graphics chip, so it's tuned to stay 
 
 You need a Mac or PC with `adb` ([Android platform tools](https://developer.android.com/tools/releases/platform-tools)) on the same Wi-Fi as the TV.
 
-1. On the TV: **Settings → System → About**, press OK on **Android TV OS build** 7 times. Then **Settings → System → Developer options → USB debugging** on. Note the TV's IP address under **Settings → Network & Internet**.
+1. On the TV: **Settings → System → About**, press OK on **Build** 7 times. Then **Settings → System → Developer options → USB debugging** on. Note the TV's IP address under **Settings → Network & Internet**.
 2. On your computer:
    ```
    adb connect <TV-IP>:5555
-   adb install -r TVHome-6.24.apk
+   adb install -r TVHome-x.y.apk
    ```
    Accept the prompt on the TV. "TV Home" now appears in your apps.
 
 ## Make it the home screen
 
-Google TV doesn't offer a choice of home app, so set it with adb:
+The first-run setup does this for you (**Set Up Automatically**). To do it by hand from a computer instead:
 
 ```
 adb shell cmd package set-home-activity com.home.tvhome/.MainActivity
@@ -84,15 +88,18 @@ keyPassword=...
 TV Home has no accounts, ads or tracking. It only goes online for:
 
 - wallpapers from Wikimedia Commons,
-- the weather, from Open-Meteo, using an approximate location from your IP address via ipapi.co,
+- the weather and air quality, from Open-Meteo, using an approximate location from your IP address via ipapi.co (or a city you choose),
+- the Top Shelf, if you turn it on: the free Cinemeta catalogue for movies and shows, or public news RSS feeds,
 - apps you choose to install from f-droid.org or a link.
 
-Voice search uses the TV's own speech service. Your name and settings stay on the TV.
+Voice search uses the TV's own speech service. Your name and settings stay on the TV. The automatic setup only talks to the TV itself (127.0.0.1) and runs a short, fixed list of commands.
 
 ## Credits
 
 - Wallpapers: [Wikimedia Commons](https://commons.wikimedia.org) photographers (credited on screen).
-- Weather: [Open-Meteo](https://open-meteo.com).
+- Weather and air quality: [Open-Meteo](https://open-meteo.com).
+- Movie and show artwork: [Cinemeta](https://github.com/Stremio/stremio-addons) (metahub images).
+- News: the publishers' own RSS feeds.
 - Some icons are based on [Material Icons](https://fonts.google.com/icons) (Apache License 2.0).
 
 App names and logos shown on the screen belong to their owners. TV Home is not affiliated with Google, Xiaomi, Sony or any streaming service.

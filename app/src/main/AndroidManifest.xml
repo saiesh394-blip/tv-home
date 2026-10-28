@@ -83,6 +83,14 @@
             <meta-data android:name="android.accessibilityservice" android:resource="@xml/remap_service" />
         </service>
 
+        <!-- First-run setup -->
+        <activity
+            android:name=".SetupActivity"
+            android:exported="false"
+            android:screenOrientation="landscape"
+            android:windowSoftInputMode="adjustPan"
+            android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen" />
+
         <!-- Standby clock -->
         <activity
             android:name=".StandbyActivity"

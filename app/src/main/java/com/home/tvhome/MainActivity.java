@@ -4,7 +4,9 @@ import android.animation.ObjectAnimator;
 import android.animation.TimeInterpolator;
 import android.animation.ValueAnimator;
 import android.app.Activity;
+import android.app.ActivityOptions;
 import android.app.AlertDialog;
+import android.app.SearchManager;
 import android.content.ComponentName;
 import android.content.DialogInterface;
 import android.content.Intent;
@@ -147,7 +149,7 @@ public class MainActivity extends Activity {
     private App pendingHero;
     private final Runnable heroUpdate = new Runnable() {
         @Override public void run() {
-            if (pendingHero == null) return;
+            if (pendingHero == null || shelfOn()) return;
             showAppHero(pendingHero);
             if (followColour()) applyColour(pendingHero);
             else showBackdrop(pendingHero);
@@ -224,6 +226,26 @@ public class MainActivity extends Activity {
     private Bitmap glassPhoto;
     private static final int REQ_EPG = 46;
 
+    // 6.25: Top Shelf, weather pill and panel, opening animation, setup
+    private LinearLayout weatherPill;
+    private ImageView weatherIcon, avatarView, heroLogo;
+    private TextView weatherTemp, shelfDots, shelfOpenText;
+    private Weather.Data weatherData;
+    private FrameLayout wxOverlay;
+    private LinearLayout wxPanel, shelfActions;
+    private ImageView wxBlur;
+    private boolean wxOpen;
+    private View shelfOpen;
+    private List<TopShelf.Card> shelfCards = new ArrayList<>();
+    private int shelfIndex = -1, cardGen;
+    private boolean shelfLoading, idleFull;
+    private String shelfLoadedMode;
+    private long shelfLoadedAt, lastKey = System.currentTimeMillis(), lastAdvance;
+    private Bitmap pendingWallpaper;
+    private String pendingCredit;
+    private View launchFrom;
+    private boolean photoIsCard;
+
     // Control Centre
     private FrameLayout ccOverlay;
     private LinearLayout ccPanel;
@@ -249,7 +271,7 @@ public class MainActivity extends Activity {
         @Override public void run() {
             updateGreeting();
             updateNight();
-            if (wallpapers != null) wallpapers.refresh(false);
+            if (wallpapers != null && !shelfOn()) wallpapers.refresh(false);
             ui.postDelayed(this, 60000);
         }
     };
@@ -267,7 +289,10 @@ public class MainActivity extends Activity {
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         smooth = prefs.getBoolean("smooth_motion", true);
         wallpapers = new Wallpapers(this, prefs, new Wallpapers.Listener() {
-            @Override public void onWallpaper(Bitmap b, String credit) { showWallpaper(b, credit); }
+            @Override public void onWallpaper(Bitmap b, String credit) {
+                if (shelfOn()) { pendingWallpaper = b; pendingCredit = credit; return; }
+                showWallpaper(b, credit);
+            }
         });
 
         // Size tiles so five fit across the screen.
@@ -293,6 +318,7 @@ public class MainActivity extends Activity {
         buildSearch(outer);
         buildFolderOverlay(outer);
         buildSettings(outer);
+        buildWeatherPanel(outer);
         setContentView(outer);
         String packPkg = prefs.getString("icon_pack", null);
         if (packPkg != null) loadIconPack(packPkg);
@@ -317,11 +343,19 @@ public class MainActivity extends Activity {
         }
         showGreeting();
         showBackdrop(null);
-        if (!askedName && !prefs.contains("user_name")) {
-            ui.postDelayed(new Runnable() { @Override public void run() { askName(); } }, 900);
+        if (!prefs.getBoolean("setup_done", false)) {
+            startActivity(new Intent(this, SetupActivity.class));
+            overridePendingTransition(android.R.anim.fade_in, android.R.anim.fade_out);
         }
         ui.removeCallbacks(tick);
         tick.run();
+        refreshAvatar();
+        applyShelfLayout();
+        loadShelf(false);
+        lastKey = System.currentTimeMillis();
+        ui.removeCallbacks(shelfTick);
+        ui.postDelayed(shelfTick, 2000);
+        showCachedWeather();
         refreshWeather(false);
         loadWatchNext();
         askWatchNextOnce();
@@ -331,6 +365,8 @@ public class MainActivity extends Activity {
     protected void onPause() {
         super.onPause();
         ui.removeCallbacks(tick);
+        ui.removeCallbacks(shelfTick);
+        if (idleFull) wakeFromIdle();
         cancelVoice();
     }
 
@@ -347,6 +383,8 @@ public class MainActivity extends Activity {
         if (searchOpen) closeSearch();
         if (openFolder != null) closeFolderPanel(false);
         if (settingsOpen) closeSettings(false);
+        if (wxOpen) closeWeather();
+        if (idleFull) wakeFromIdle();
         goTop();
     }
 
@@ -354,6 +392,7 @@ public class MainActivity extends Activity {
     @Override
     public void onBackPressed() {
         if (ccOpen) { closeControlCentre(); return; }
+        if (wxOpen) { closeWeather(); return; }
         if (listening) { cancelVoice(); return; }
         if (searchOpen) { closeSearch(); return; }
         if (openFolder != null) { closeFolderPanel(true); return; }
@@ -374,6 +413,18 @@ public class MainActivity extends Activity {
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent e) {
+        lastKey = System.currentTimeMillis();
+        if (idleFull) {
+            if (e.getAction() == KeyEvent.ACTION_DOWN) wakeFromIdle();
+            int k = e.getKeyCode();
+            if (k != KeyEvent.KEYCODE_VOLUME_UP && k != KeyEvent.KEYCODE_VOLUME_DOWN && k != KeyEvent.KEYCODE_VOLUME_MUTE) return true;
+        }
+        if (shelfOpen != null && getCurrentFocus() == shelfOpen && e.getAction() == KeyEvent.ACTION_DOWN
+                && (e.getKeyCode() == KeyEvent.KEYCODE_DPAD_LEFT || e.getKeyCode() == KeyEvent.KEYCODE_DPAD_RIGHT)) {
+            lastAdvance = System.currentTimeMillis();
+            showCard(shelfIndex + (e.getKeyCode() == KeyEvent.KEYCODE_DPAD_RIGHT ? 1 : -1));
+            return true;
+        }
         // The remote's mic button: TV Home's own voice search with the colour waves, not Google's screen.
         int k0 = e.getKeyCode();
         if ((k0 == KeyEvent.KEYCODE_SEARCH || k0 == KeyEvent.KEYCODE_VOICE_ASSIST) && movingCell == null) {
@@ -565,6 +616,14 @@ public class MainActivity extends Activity {
         heroEyebrow.setShadowLayer(dp(8), 0, 0, 0x66000000);
         heroEyebrow.setVisibility(View.GONE);
         hero.addView(heroEyebrow);
+        heroLogo = new ImageView(this);
+        heroLogo.setAdjustViewBounds(true);
+        heroLogo.setScaleType(ImageView.ScaleType.FIT_START);
+        heroLogo.setMaxWidth(dp(340));
+        heroLogo.setVisibility(View.GONE);
+        LinearLayout.LayoutParams hlg = new LinearLayout.LayoutParams(-2, dp(48));
+        hlg.setMargins(0, dp(4), 0, dp(2));
+        hero.addView(heroLogo, hlg);
         heroTitle = new TextView(this);
         greetTitle = heroTitle;
         heroTitle.setTextSize(34);
@@ -598,11 +657,32 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams hl = new LinearLayout.LayoutParams(-2, -2);
         hl.setMargins(0, dp(16), 0, 0);
         hero.addView(moveHint, hl);
+        shelfActions = new LinearLayout(this);
+        shelfActions.setOrientation(LinearLayout.HORIZONTAL);
+        shelfActions.setGravity(Gravity.CENTER_VERTICAL);
+        shelfActions.setClipChildren(false);
+        shelfActions.setClipToPadding(false);
+        shelfOpen = pill("ic_search", "Where to Watch", "Open", new Runnable() {
+            @Override public void run() { openCard(); }
+        });
+        shelfOpenText = (TextView) ((LinearLayout) shelfOpen).getChildAt(1);
+        shelfActions.addView(shelfOpen, new LinearLayout.LayoutParams(-2, dp(32)));
+        shelfDots = new TextView(this);
+        shelfDots.setTextSize(9);
+        shelfDots.setLetterSpacing(0.3f);
+        shelfDots.setTextColor(0x66FFFFFF);
+        shelfDots.setShadowLayer(dp(4), 0, 0, 0x66000000);
+        LinearLayout.LayoutParams sdl = new LinearLayout.LayoutParams(-2, -2);
+        sdl.setMargins(dp(16), 0, 0, 0);
+        shelfActions.addView(shelfDots, sdl);
+        shelfActions.setVisibility(View.GONE);
+        LinearLayout.LayoutParams sal = new LinearLayout.LayoutParams(-2, -2);
+        sal.setMargins(dp(2), dp(8), 0, 0);
+        hero.addView(shelfActions, sal);
         FrameLayout.LayoutParams heroLp = new FrameLayout.LayoutParams(
                 (int) (screenW * 0.62f), -2, Gravity.TOP | Gravity.START);
         heroLp.setMargins(side, (int) (screenH * 0.18f), 0, 0);
         root.addView(hero, heroLp);
-        hero.setLayerType(View.LAYER_TYPE_HARDWARE, null);
         setHeroNow(greetEyebrow(), greetTitleText(), greetLine());
 
         // Photo credit, small, in the empty top-left corner.
@@ -614,9 +694,46 @@ public class MainActivity extends Activity {
         creditView.setEllipsize(TextUtils.TruncateAt.END);
         creditView.setMaxWidth((int) (screenW * 0.4f));
         creditView.setVisibility(View.GONE);
-        FrameLayout.LayoutParams crl = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.START);
-        crl.setMargins(side, dp(34), 0, 0);
+        FrameLayout.LayoutParams crl = new FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM | Gravity.START);
+        crl.setMargins(side, 0, 0, dp(8));
         root.addView(creditView, crl);
+
+        // Weather pill, top left: an icon and the temperature. OK opens the details.
+        weatherPill = new LinearLayout(this);
+        weatherPill.setOrientation(LinearLayout.HORIZONTAL);
+        weatherPill.setGravity(Gravity.CENTER_VERTICAL);
+        weatherPill.setPadding(dp(10), 0, dp(14), 0);
+        final GradientDrawable wbg = new GradientDrawable();
+        wbg.setCornerRadius(dp(18));
+        wbg.setColor(0x33FFFFFF);
+        weatherPill.setBackground(wbg);
+        weatherPill.setFocusable(true);
+        weatherPill.setClickable(true);
+        weatherPill.setContentDescription("Weather");
+        if (Build.VERSION.SDK_INT >= 26) weatherPill.setDefaultFocusHighlightEnabled(false);
+        weatherIcon = new ImageView(this);
+        weatherPill.addView(weatherIcon, new LinearLayout.LayoutParams(dp(22), dp(22)));
+        weatherTemp = new TextView(this);
+        weatherTemp.setTextSize(15);
+        weatherTemp.setTextColor(Color.WHITE);
+        weatherTemp.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        weatherTemp.setPadding(dp(7), 0, 0, 0);
+        weatherPill.addView(weatherTemp);
+        weatherPill.setOnFocusChangeListener(new View.OnFocusChangeListener() {
+            @Override public void onFocusChange(View v, boolean has) {
+                wbg.setColor(has ? 0xFFFFFFFF : 0x33FFFFFF);
+                weatherTemp.setTextColor(has ? 0xFF111317 : Color.WHITE);
+                v.animate().scaleX(has ? 1.08f : 1f).scaleY(has ? 1.08f : 1f)
+                        .setInterpolator(has ? SPRING : EASE).setDuration(has ? 300 : 200).start();
+            }
+        });
+        weatherPill.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { openWeather(); }
+        });
+        weatherPill.setVisibility(View.GONE);
+        FrameLayout.LayoutParams wpl = new FrameLayout.LayoutParams(-2, dp(36), Gravity.TOP | Gravity.START);
+        wpl.setMargins(side, dp(24), 0, 0);
+        root.addView(weatherPill, wpl);
 
         // All apps in the middle of the screen, scrolling on their own.
         int dockSpace = dp(DOCK_ICON + 34);
@@ -711,9 +828,7 @@ public class MainActivity extends Activity {
         weatherView.setVisibility(View.GONE);
         String cached = prefs.getString("weather_text", null);
         if (cached != null) { weatherView.setText(cached); weatherView.setVisibility(View.VISIBLE); }
-        LinearLayout.LayoutParams wl = new LinearLayout.LayoutParams(-2, -2);
-        wl.setMargins(dp(20), 0, 0, 0);
-        topBar.addView(weatherView, wl);
+
         TextClock clock = new TextClock(this);
         clock.setFormat12Hour("h:mm");
         clock.setFormat24Hour("HH:mm");
@@ -724,6 +839,11 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams cl = new LinearLayout.LayoutParams(-2, -2);
         cl.setMargins(dp(16), 0, 0, 0);
         topBar.addView(clock, cl);
+        avatarView = new ImageView(this);
+        avatarView.setVisibility(View.GONE);
+        LinearLayout.LayoutParams avl = new LinearLayout.LayoutParams(dp(30), dp(30));
+        avl.setMargins(dp(14), 0, 0, 0);
+        topBar.addView(avatarView, avl);
         FrameLayout.LayoutParams tbl = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.END);
         tbl.setMargins(0, dp(14), side - dp(10), 0);
         root.addView(topBar, tbl);
@@ -848,7 +968,7 @@ public class MainActivity extends Activity {
     }
 
     private boolean followColour() {
-        return prefs.getBoolean("follow_colour", true);
+        return prefs.getBoolean("follow_colour", true) && !shelfOn();
     }
 
     /** Applies the app's colour: baked into the photo, or a plain colour fill until a photo is ready. */
@@ -1072,6 +1192,7 @@ public class MainActivity extends Activity {
     private void showGreeting() {
         ui.removeCallbacks(heroUpdate);
         pendingHero = null;
+        if (shelfOn()) return;
         heroGreeting = true;
         heroTitle.setText(greetTitleText());
         setSub(greetLine());
@@ -1448,7 +1569,7 @@ public class MainActivity extends Activity {
             }
         });
         icon.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) { launch(a); }
+            @Override public void onClick(View v) { launchFrom = v; launch(a); }
         });
         icon.setOnLongClickListener(new View.OnLongClickListener() {
             @Override public boolean onLongClick(View v) { showOptions(a, true); return true; }
@@ -1855,7 +1976,7 @@ public class MainActivity extends Activity {
         t.setTag(tag);
         t.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(final View v) {
-                press(v, new Runnable() { @Override public void run() { launch(a); } });
+                press(v, new Runnable() { @Override public void run() { launchFrom = v; launch(a); } });
             }
         });
         t.setOnLongClickListener(new View.OnLongClickListener() {
@@ -2324,7 +2445,7 @@ public class MainActivity extends Activity {
 
     private void updateGreeting() {
         // Keeps the greeting current (morning, evening...) while it's showing.
-        if (heroTitle == null) return;
+        if (heroTitle == null || shelfOn()) return;
         String t = greetTitleText();
         if (!t.contentEquals(heroTitle.getText())) heroTitle.setText(t);
         if (heroGreeting && !greetLine().contentEquals(heroSub.getText())) heroSub.setText(greetLine());
@@ -2341,48 +2462,6 @@ public class MainActivity extends Activity {
     }
 
     // ---------- Weather ----------
-
-    private void refreshWeather(boolean force) {
-        long last = prefs.getLong("weather_time", 0);
-        if (!force && System.currentTimeMillis() - last < 30 * 60 * 1000L) return;
-        prefs.edit().putLong("weather_time", System.currentTimeMillis()).apply();
-        new Thread(new Runnable() {
-            @Override public void run() {
-                try {
-                    float lat = prefs.getFloat("lat", Float.NaN), lon = prefs.getFloat("lon", Float.NaN);
-                    long locTime = prefs.getLong("loc_time", 0);
-                    if (Float.isNaN(lat) || System.currentTimeMillis() - locTime > 24 * 3600 * 1000L
-                            || !prefs.contains("weather_city")) {
-                        JSONObject loc = new JSONObject(get("https://ipapi.co/json/"));
-                        String city = loc.optString("city", "");
-                        if (!city.isEmpty()) prefs.edit().putString("weather_city", city).apply();
-                        lat = (float) loc.getDouble("latitude");
-                        lon = (float) loc.getDouble("longitude");
-                        prefs.edit().putFloat("lat", lat).putFloat("lon", lon)
-                                .putLong("loc_time", System.currentTimeMillis()).apply();
-                    }
-                    JSONObject w = new JSONObject(get("https://api.open-meteo.com/v1/forecast?latitude="
-                            + lat + "&longitude=" + lon + "&current=temperature_2m,weather_code"));
-                    JSONObject cur = w.getJSONObject("current");
-                    int temp = (int) Math.round(cur.getDouble("temperature_2m"));
-                    final String text = temp + "\u00B0  " + describe(cur.getInt("weather_code"));
-                    prefs.edit().putString("weather_text", text).apply();
-                    ui.post(new Runnable() {
-                        @Override public void run() {
-                            weatherView.setText(text);
-                            if (weatherView.getVisibility() != View.VISIBLE) {
-                                weatherView.setAlpha(0f);
-                                weatherView.setVisibility(View.VISIBLE);
-                                weatherView.animate().alpha(1f).setDuration(600).start();
-                            }
-                        }
-                    });
-                } catch (Exception ignored) {
-                    // No internet or the service is down: keep the last reading, or nothing.
-                }
-            }
-        }).start();
-    }
 
     private static String get(String url) throws Exception {
         HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
@@ -3432,7 +3511,7 @@ public class MainActivity extends Activity {
                     @Override public void run() {
                         try {
                             Intent i = Intent.parseUri(w.intent, Intent.URI_INTENT_SCHEME);
-                            startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+                            startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK), openOptions(v));
                             if (own != null) addRecent(own.pkg);
                         } catch (Exception e) {
                             if (own != null) launch(own);
@@ -4304,8 +4383,17 @@ public class MainActivity extends Activity {
         row("ic_wallpaper", 0xFF5AC8FA, "Appearance", "", true, new Runnable() {
             @Override public void run() { subPage("Appearance", new Runnable() { @Override public void run() { pageAppearance(); } }); }
         });
+        row("ic_picture", 0xFFFF453A, "Home Screen", shelfLabel(), true, new Runnable() {
+            @Override public void run() { subPage("Home Screen", new Runnable() { @Override public void run() { pageHomeScreen(); } }); }
+        });
         row("ic_person", 0xFFFF9F0A, "Profile", name.isEmpty() ? "Add your name" : name, true, new Runnable() {
-            @Override public void run() { askName(); }
+            @Override public void run() {
+                startActivity(new Intent(MainActivity.this, SetupActivity.class).putExtra("step", 1).putExtra("single", true));
+            }
+        });
+        row("ic_weather", 0xFF64D2FF, "Weather", prefs.getBoolean("weather_pill", true)
+                ? prefs.getString("weather_city", "On") : "Off", true, new Runnable() {
+            @Override public void run() { subPage("Weather", new Runnable() { @Override public void run() { pageWeather(); } }); }
         });
         row("ic_clock", 0xFFFFD60A, "StandBy", StandbyActivity.STYLES[prefs.getInt("standby_style", 0)], true, new Runnable() {
             @Override public void run() { subPage("StandBy", new Runnable() { @Override public void run() { pageStandby(); } }); }
@@ -4327,6 +4415,9 @@ public class MainActivity extends Activity {
         });
         row("ic_tune", 0xFFBF5AF2, "Settings Style", glassSettings() ? "Glass UI" : "Classic UI", true, new Runnable() {
             @Override public void run() { subPage("Settings Style", new Runnable() { @Override public void run() { pageStyle(); } }); }
+        });
+        row("ic_download", 0xFF30D158, "Setup & Home App", prefs.getBoolean("adb_setup_ok", false) ? "Done" : "", true, new Runnable() {
+            @Override public void run() { subPage("Setup & Home App", new Runnable() { @Override public void run() { pageSetup(); } }); }
         });
         row("gear", 0xFFD1D1D6, "All Settings", "", false, new Runnable() {
             @Override public void run() { ccAction("All settings"); }
@@ -4383,6 +4474,28 @@ public class MainActivity extends Activity {
         });
         row("ic_folder", 0xFF64D2FF, "Icon Pack", packLabel, true, new Runnable() {
             @Override public void run() { chooseIconPack(); }
+        });
+        row("ic_apps", 0xFFFFD60A, "App Opening", OPEN_NAMES[openStyle()], true, new Runnable() {
+            @Override public void run() {
+                subPage("App Opening", new Runnable() {
+                    @Override public void run() {
+                        choices(OPEN_NAMES, openStyle(), new ChoiceResult() {
+                            @Override public void chose(int k) { prefs.edit().putString("open_anim", OPEN_KEYS[k]).apply(); }
+                        });
+                        row("ic_tune", 0xFF30D158, "Opening Speed", SPEED_NAMES[prefs.getInt("open_speed", 1)], true, new Runnable() {
+                            @Override public void run() {
+                                subPage("Opening Speed", new Runnable() {
+                                    @Override public void run() {
+                                        choices(SPEED_NAMES, prefs.getInt("open_speed", 1), new ChoiceResult() {
+                                            @Override public void chose(int k) { prefs.edit().putInt("open_speed", k).apply(); }
+                                        });
+                                    }
+                                });
+                            }
+                        });
+                    }
+                });
+            }
         });
     }
 
@@ -4834,7 +4947,7 @@ public class MainActivity extends Activity {
     }
 
     private void launch(App a) {
-        if ("tvhome:settings".equals(a.pkg)) { openSettings(); return; }
+        if ("tvhome:settings".equals(a.pkg)) { launchFrom = null; openSettings(); return; }
         addRecent(a.pkg);
         if (openFolder != null) closeFolderPanel(false);
         if (a.inputId != null) { switchInput(a); return; }
@@ -4847,8 +4960,10 @@ public class MainActivity extends Activity {
     }
 
     private void start(Intent i) {
+        View from = launchFrom;
+        launchFrom = null;
         try {
-            startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK), openOptions(from));
         } catch (Exception e) {
             Toast.makeText(this, "Couldn't open that", Toast.LENGTH_SHORT).show();
         }
@@ -4856,5 +4971,726 @@ public class MainActivity extends Activity {
 
     private int dp(int v) {
         return Math.round(v * getResources().getDisplayMetrics().density);
+    }
+
+    // ================================================================== 6.25 features
+
+    // ---------- Opening animation ----------
+
+    static final String[] OPEN_KEYS = {"zoom", "reveal", "fade", "rise", "pop", "off"};
+    static final String[] OPEN_NAMES = {"Zoom from icon", "Reveal from icon", "Fade", "Rise", "Pop", "Off (TV default)"};
+    static final String[] SPEED_NAMES = {"Fast", "Normal", "Relaxed"};
+    private static final String[] SPEED_KEYS = {"fast", "normal", "slow"};
+
+    private int openStyle() {
+        String k = prefs.getString("open_anim", "zoom");
+        for (int i = 0; i < OPEN_KEYS.length; i++) if (OPEN_KEYS[i].equals(k)) return i;
+        return 0;
+    }
+
+    /** How the app being opened appears: growing out of its icon, or a fade, rise or pop. */
+    private Bundle openOptions(View from) {
+        String style = OPEN_KEYS[openStyle()];
+        if ("off".equals(style)) return null;
+        try {
+            if (from != null && from.isAttachedToWindow() && from.getWidth() > 0) {
+                if ("zoom".equals(style)) {
+                    return ActivityOptions.makeScaleUpAnimation(from, 0, 0, from.getWidth(), from.getHeight()).toBundle();
+                }
+                if ("reveal".equals(style) && Build.VERSION.SDK_INT >= 23) {
+                    return ActivityOptions.makeClipRevealAnimation(from, 0, 0, from.getWidth(), from.getHeight()).toBundle();
+                }
+            }
+            if ("zoom".equals(style) || "reveal".equals(style)) style = "pop";
+            String speed = SPEED_KEYS[Math.max(0, Math.min(2, prefs.getInt("open_speed", 1)))];
+            int enter = getResources().getIdentifier("open_" + style + "_" + speed, "anim", getPackageName());
+            int exit = getResources().getIdentifier("open_hold_" + speed, "anim", getPackageName());
+            if (enter == 0) return null;
+            return ActivityOptions.makeCustomAnimation(this, enter, exit).toBundle();
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    // ---------- Profile picture ----------
+
+    private void refreshAvatar() {
+        if (avatarView == null) return;
+        String name = prefs.getString("user_name", "");
+        String symbol = prefs.getString("avatar", "");
+        if (name.isEmpty() && symbol.isEmpty()) { avatarView.setVisibility(View.GONE); return; }
+        int ci = Math.max(0, Math.min(SetupActivity.AVATAR_COLOURS.length - 1, prefs.getInt("avatar_colour", 0)));
+        avatarView.setImageBitmap(Art.avatar(symbol, name.isEmpty() ? "?" : name.substring(0, 1).toUpperCase(),
+                SetupActivity.AVATAR_COLOURS[ci], dp(30)));
+        avatarView.setVisibility(View.VISIBLE);
+    }
+
+    // ---------- Top Shelf ----------
+
+    private String shelfMode() { return prefs.getString("shelf_mode", TopShelf.MODE_OFF); }
+
+    private boolean shelfOn() { return prefs != null && !TopShelf.MODE_OFF.equals(shelfMode()); }
+
+    private String shelfLabel() {
+        String m = shelfMode();
+        return TopShelf.MODE_WATCH.equals(m) ? "Movies & Shows" : TopShelf.MODE_NEWS.equals(m) ? "News" : "Wallpaper";
+    }
+
+    private boolean overlayOpen() {
+        return ccOpen || searchOpen || openFolder != null || settingsOpen || wxOpen || movingCell != null || listening;
+    }
+
+    /** Moves the text up and the rows down a little while big artwork is showing. */
+    private void applyShelfLayout() {
+        if (hero == null) return;
+        boolean on = shelfOn();
+        FrameLayout.LayoutParams hl = (FrameLayout.LayoutParams) hero.getLayoutParams();
+        int top = (int) (screenH * (on ? 0.135f : 0.18f));
+        if (hl.topMargin != top) { hl.topMargin = top; hero.setLayoutParams(hl); }
+        FrameLayout.LayoutParams sl = (FrameLayout.LayoutParams) scroll.getLayoutParams();
+        int stop = (int) (screenH * (on ? 0.45f : 0.355f));
+        if (sl.topMargin != stop) { sl.topMargin = stop; scroll.setLayoutParams(sl); }
+        LinearLayout.LayoutParams subl = (LinearLayout.LayoutParams) heroSub.getLayoutParams();
+        int subH = on ? -2 : dp(56);
+        if (subl.height != subH) { subl.height = subH; heroSub.setLayoutParams(subl); }
+        heroSub.setMaxLines(on ? 3 : 2);
+        heroSub.setTextSize(on ? 14 : 17);
+        shelfActions.setVisibility(on ? View.VISIBLE : View.GONE);
+        if (!on) {
+            ++cardGen;
+            shelfIndex = -1;
+            heroEyebrow.setVisibility(View.GONE);
+            heroLogo.setVisibility(View.GONE);
+            heroLogo.setImageDrawable(null);
+            heroTitle.setVisibility(View.VISIBLE);
+            heroTitle.setTextSize(34);
+            heroTitle.setSingleLine(true);
+            if (idleFull) wakeFromIdle();
+            showGreeting();
+            shelfLoadedMode = null;
+            if (photoIsCard) {
+                photoIsCard = false;
+                if (pendingWallpaper != null) {
+                    Bitmap b = pendingWallpaper;
+                    pendingWallpaper = null;
+                    showWallpaper(b, pendingCredit);
+                } else {
+                    wallpapers.refresh(true);
+                }
+            }
+        } else {
+            heroEyebrow.setVisibility(View.VISIBLE);
+            if (shelfIndex < 0) {
+                heroLogo.setVisibility(View.GONE);
+                heroTitle.setVisibility(View.VISIBLE);
+                heroTitle.setTextSize(28);
+                heroEyebrow.setText(TopShelf.MODE_NEWS.equals(shelfMode()) ? "NEWS" : "POPULAR NOW");
+                heroTitle.setText(TopShelf.MODE_NEWS.equals(shelfMode()) ? "Getting the headlines…" : "Finding something to watch…");
+                heroSub.setText("");
+            }
+        }
+    }
+
+    private void loadShelf(boolean force) {
+        if (!shelfOn() || shelfLoading) return;
+        final String mode = shelfMode();
+        long age = System.currentTimeMillis() - shelfLoadedAt;
+        long maxAge = TopShelf.MODE_NEWS.equals(mode) ? prefs.getInt("news_every", 30) * 60000L : 6 * 3600000L;
+        if (!force && mode.equals(shelfLoadedMode) && !shelfCards.isEmpty() && age < maxAge) return;
+        shelfLoading = true;
+        new Thread(new Runnable() {
+            @Override public void run() {
+                final List<TopShelf.Card> list = TopShelf.MODE_NEWS.equals(mode) ? TopShelf.news() : TopShelf.watch();
+                ui.post(new Runnable() {
+                    @Override public void run() {
+                        shelfLoading = false;
+                        if (!mode.equals(shelfMode())) { loadShelf(true); return; }
+                        if (list.isEmpty()) {
+                            if (shelfCards.isEmpty()) {
+                                heroTitle.setText("Couldn't reach the service");
+                                heroSub.setText("Check the internet connection. TV Home will try again.");
+                            }
+                            shelfLoadedAt = System.currentTimeMillis() - 25 * 60000L;
+                            return;
+                        }
+                        shelfCards = list;
+                        shelfLoadedMode = mode;
+                        shelfLoadedAt = System.currentTimeMillis();
+                        lastAdvance = System.currentTimeMillis();
+                        showCard(0);
+                    }
+                });
+            }
+        }).start();
+    }
+
+    private TopShelf.Card currentCard() {
+        return shelfIndex >= 0 && shelfIndex < shelfCards.size() ? shelfCards.get(shelfIndex) : null;
+    }
+
+    /** Shows one card: its artwork fills the screen and its title, logo and details sit top left. */
+    private void showCard(int index) {
+        final int n = shelfCards.size();
+        if (n == 0 || !shelfOn()) return;
+        final int i = ((index % n) + n) % n;
+        final TopShelf.Card c = shelfCards.get(i);
+        final int gen = ++cardGen;
+        final int w = getResources().getDisplayMetrics().widthPixels, h = getResources().getDisplayMetrics().heightPixels;
+        new Thread(new Runnable() {
+            @Override public void run() {
+                final Bitmap bg = TopShelf.picture(MainActivity.this, c.image, w, h, false);
+                final Bitmap logo = c.logo != null && !c.logo.isEmpty()
+                        ? TopShelf.picture(MainActivity.this, c.logo, dp(340), dp(48), true) : null;
+                ui.post(new Runnable() {
+                    @Override public void run() {
+                        if (gen != cardGen || !shelfOn()) return;
+                        if (bg == null) {
+                            // This picture didn't load: drop the card and try the next one.
+                            if (i < shelfCards.size()) shelfCards.remove(i);
+                            if (!shelfCards.isEmpty()) showCard(i);
+                            return;
+                        }
+                        shelfIndex = i;
+                        if (!photoIsCard && pendingWallpaper == null && basePhoto != null) {
+                            pendingWallpaper = basePhoto;     // your photo, to bring back later
+                            pendingCredit = baseCredit;
+                        }
+                        photoIsCard = true;
+                        showWallpaper(bg, "");
+                        cardText(c, logo);
+                        updateDots();
+                        prefetch(i + 1);
+                    }
+                });
+            }
+        }).start();
+    }
+
+    private void prefetch(final int index) {
+        final int n = shelfCards.size();
+        if (n < 2) return;
+        final TopShelf.Card c = shelfCards.get(index % n);
+        final int w = getResources().getDisplayMetrics().widthPixels, h = getResources().getDisplayMetrics().heightPixels;
+        new Thread(new Runnable() {
+            @Override public void run() {
+                Bitmap b = TopShelf.picture(MainActivity.this, c.image, w, h, false);
+                if (b != null) b.recycle();   // just warms the cache
+            }
+        }).start();
+    }
+
+    private void cardText(final TopShelf.Card c, final Bitmap logo) {
+        final boolean news = "news".equals(c.kind);
+        final int gen = ++heroGen;
+        hero.animate().cancel();
+        hero.animate().alpha(0f).setDuration(smooth ? 120 : 180).setInterpolator(EASE).withEndAction(new Runnable() {
+            @Override public void run() {
+                if (gen != heroGen) return;
+                heroEyebrow.setText(c.eyebrow);
+                heroEyebrow.setVisibility(View.VISIBLE);
+                if (logo != null) {
+                    heroLogo.setImageBitmap(logo);
+                    heroLogo.setVisibility(View.VISIBLE);
+                    heroTitle.setVisibility(View.GONE);
+                } else {
+                    heroLogo.setVisibility(View.GONE);
+                    heroLogo.setImageDrawable(null);
+                    heroTitle.setVisibility(View.VISIBLE);
+                    heroTitle.setText(c.title);
+                    heroTitle.setTextSize(news ? 24 : 34);
+                    heroTitle.setSingleLine(!news);
+                    heroTitle.setMaxLines(news ? 2 : 1);
+                }
+                StringBuilder sub = new StringBuilder();
+                if (news) {
+                    String ago = TopShelf.ago(c.time);
+                    if (!ago.isEmpty()) sub.append(ago);
+                    if (c.desc != null && !c.desc.isEmpty() && !c.desc.equals(c.title)) {
+                        if (sub.length() > 0) sub.append("  ·  ");
+                        sub.append(c.desc);
+                    }
+                } else {
+                    if (c.meta != null) sub.append(c.meta);
+                    if (c.desc != null && !c.desc.isEmpty()) sub.append('\n').append(c.desc);
+                }
+                heroSub.setText(sub.toString());
+                heroSub.setMaxLines(news ? 2 : 3);
+                shelfOpenText.setText(news ? "Read Story" : "Where to Watch");
+                hero.setTranslationY(dp(8));
+                hero.animate().alpha(1f).translationY(0).setDuration(smooth ? 260 : 380).setInterpolator(EASE).start();
+            }
+        }).start();
+    }
+
+    private void updateDots() {
+        int n = shelfCards.size();
+        if (n <= 1) { shelfDots.setText(""); return; }
+        int show = Math.min(n, 12);
+        int first = Math.max(0, Math.min(shelfIndex - show / 2, n - show));
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < show; i++) sb.append('●');
+        SpannableString ss = new SpannableString(sb.toString());
+        int cur = shelfIndex - first;
+        if (cur >= 0 && cur < show) ss.setSpan(new ForegroundColorSpan(Color.WHITE), cur, cur + 1, 0);
+        shelfDots.setText(ss);
+    }
+
+    /** OK on the card: where to watch it (the TV's own search), or the news story. */
+    private void openCard() {
+        final TopShelf.Card c = currentCard();
+        if (c == null) return;
+        if ("news".equals(c.kind)) { showStory(c); return; }
+        try {
+            startActivity(new Intent("android.search.action.GLOBAL_SEARCH").putExtra(SearchManager.QUERY, c.title)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        } catch (Exception e) {
+            try {
+                startActivity(new Intent(Intent.ACTION_WEB_SEARCH).putExtra(SearchManager.QUERY, c.title)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            } catch (Exception e2) {
+                Toast.makeText(this, "Search isn't available on this TV", Toast.LENGTH_SHORT).show();
+            }
+        }
+    }
+
+    private void showStory(TopShelf.Card c) {
+        TextView body = new TextView(this);
+        String ago = TopShelf.ago(c.time);
+        body.setText((c.desc == null || c.desc.isEmpty() ? "" : c.desc + "\n\n") + c.source + (ago.isEmpty() ? "" : "  ·  " + ago));
+        body.setTextSize(17);
+        body.setLineSpacing(0, 1.25f);
+        body.setPadding(dp(24), dp(8), dp(24), 0);
+        new AlertDialog.Builder(this)
+                .setTitle(c.title)
+                .setView(body)
+                .setPositiveButton("Close", null)
+                .show();
+    }
+
+    private final Runnable shelfTick = new Runnable() {
+        @Override public void run() {
+            ui.postDelayed(this, 2000);
+            if (!shelfOn() || shelfCards.isEmpty() || overlayOpen() || !hasWindowFocus()) return;
+            long now = System.currentTimeMillis();
+            loadShelf(false);
+            if (prefs.getBoolean("shelf_idle", true) && !idleFull && now - lastKey > 30000) enterIdle();
+            long every = prefs.getInt("shelf_every", 8) * 1000L;
+            if (prefs.getBoolean("shelf_auto", true) && now - lastKey > 4000 && now - lastAdvance >= every) {
+                lastAdvance = now;
+                showCard(shelfIndex + 1);
+            }
+        }
+    };
+
+    /** After a while without the remote, the rows and dock fade away so only the artwork shows. */
+    private void enterIdle() {
+        idleFull = true;
+        scroll.animate().cancel();
+        dockFrame.animate().cancel();
+        scroll.animate().alpha(0f).setDuration(700).setInterpolator(EASE).withLayer().start();
+        dockFrame.animate().alpha(0f).setDuration(700).setInterpolator(EASE).withLayer().start();
+        shelfActions.animate().alpha(0f).setDuration(700).start();
+        weatherPill.animate().alpha(0.6f).setDuration(700).start();
+    }
+
+    private void wakeFromIdle() {
+        idleFull = false;
+        scroll.animate().cancel();
+        dockFrame.animate().cancel();
+        scroll.animate().alpha(1f).setDuration(300).setInterpolator(EASE).withLayer().start();
+        dockFrame.animate().alpha(1f).setDuration(300).setInterpolator(EASE).withLayer().start();
+        shelfActions.animate().alpha(1f).setDuration(300).start();
+        weatherPill.animate().alpha(1f).setDuration(300).start();
+    }
+
+    private void pageHomeScreen() {
+        final String[] names = {"Wallpaper", "Movies & Shows", "News"};
+        final String[] keys = {TopShelf.MODE_OFF, TopShelf.MODE_WATCH, TopShelf.MODE_NEWS};
+        String m = shelfMode();
+        int sel = TopShelf.MODE_WATCH.equals(m) ? 1 : TopShelf.MODE_NEWS.equals(m) ? 2 : 0;
+        row("ic_picture", 0xFFFF453A, "Top Shelf", names[sel], true, new Runnable() {
+            @Override public void run() {
+                subPage("Top Shelf", new Runnable() {
+                    @Override public void run() {
+                        String cur = shelfMode();
+                        int s = TopShelf.MODE_WATCH.equals(cur) ? 1 : TopShelf.MODE_NEWS.equals(cur) ? 2 : 0;
+                        choices(new String[]{"Wallpaper (photos)", "Movies & Shows (popular now)", "News (Indian headlines)"}, s,
+                                new ChoiceResult() {
+                                    @Override public void chose(int k) {
+                                        prefs.edit().putString("shelf_mode", keys[k]).apply();
+                                        shelfCards = new ArrayList<>();
+                                        shelfIndex = -1;
+                                        ++cardGen;
+                                        applyShelfLayout();
+                                        loadShelf(true);
+                                    }
+                                });
+                    }
+                });
+            }
+        });
+        if (sel == 0) return;
+        final int[] secs = {6, 8, 12};
+        int every = prefs.getInt("shelf_every", 8);
+        row("ic_clock", 0xFFFFD60A, "Change Every", every + " seconds", true, new Runnable() {
+            @Override public void run() {
+                subPage("Change Every", new Runnable() {
+                    @Override public void run() {
+                        int e = prefs.getInt("shelf_every", 8);
+                        choices(new String[]{"6 seconds", "8 seconds", "12 seconds"}, e == 6 ? 0 : e == 12 ? 2 : 1,
+                                new ChoiceResult() {
+                                    @Override public void chose(int k) { prefs.edit().putInt("shelf_every", secs[k]).apply(); }
+                                });
+                    }
+                });
+            }
+        });
+        final boolean auto = prefs.getBoolean("shelf_auto", true);
+        row("ic_tune", 0xFF30D158, "Auto Shuffle", auto ? "On" : "Off", false, new Runnable() {
+            @Override public void run() { prefs.edit().putBoolean("shelf_auto", !prefs.getBoolean("shelf_auto", true)).apply(); refreshPage(); }
+        });
+        final boolean idle = prefs.getBoolean("shelf_idle", true);
+        row("ic_moon", 0xFFBF5AF2, "Full Screen When Idle", idle ? "On" : "Off", false, new Runnable() {
+            @Override public void run() { prefs.edit().putBoolean("shelf_idle", !prefs.getBoolean("shelf_idle", true)).apply(); refreshPage(); }
+        });
+        row("ic_download", 0xFF0A84FF, "Refresh Now", "", false, new Runnable() {
+            @Override public void run() {
+                Toast.makeText(MainActivity.this, "Refreshing…", Toast.LENGTH_SHORT).show();
+                loadShelf(true);
+            }
+        });
+    }
+
+    // ---------- Weather ----------
+
+    private void showCachedWeather() {
+        if (weatherPill == null) return;
+        boolean on = prefs.getBoolean("weather_pill", true);
+        if (!on || !prefs.contains("wx_temp")) { weatherPill.setVisibility(View.GONE); return; }
+        weatherIcon.setImageBitmap(Art.weather(prefs.getInt("wx_code", 0), prefs.getBoolean("wx_day", true), dp(22)));
+        weatherTemp.setText(prefs.getInt("wx_temp", 0) + "°");
+        if (weatherPill.getVisibility() != View.VISIBLE) {
+            weatherPill.setAlpha(0f);
+            weatherPill.setVisibility(View.VISIBLE);
+            weatherPill.animate().alpha(idleFull ? 0.6f : 1f).setDuration(500).start();
+        }
+    }
+
+    private boolean weatherLoading;
+
+    private void refreshWeather(boolean force) {
+        long last = prefs.getLong("weather_time", 0);
+        if (weatherLoading || (!force && weatherData != null && System.currentTimeMillis() - last < 20 * 60 * 1000L)) return;
+        weatherLoading = true;
+        new Thread(new Runnable() {
+            @Override public void run() {
+                try {
+                    final Weather.Data d = Weather.fetch(prefs);
+                    prefs.edit().putLong("weather_time", System.currentTimeMillis())
+                            .putString("weather_text", d.temp + "°  " + Weather.describe(d.code))
+                            .putInt("wx_temp", d.temp).putInt("wx_code", d.code).putBoolean("wx_day", d.day).apply();
+                    ui.post(new Runnable() {
+                        @Override public void run() {
+                            weatherLoading = false;
+                            weatherData = d;
+                            showCachedWeather();
+                            if (wxOpen) fillWeatherPanel();
+                        }
+                    });
+                } catch (Exception e) {
+                    ui.post(new Runnable() {
+                        @Override public void run() {
+                            weatherLoading = false;
+                            if (wxOpen && weatherData == null) fillWeatherPanel();
+                        }
+                    });
+                }
+            }
+        }).start();
+    }
+
+    private void buildWeatherPanel(FrameLayout outer) {
+        wxOverlay = new FrameLayout(this);
+        wxOverlay.setVisibility(View.INVISIBLE);
+        wxBlur = new ImageView(this);
+        wxBlur.setScaleType(ImageView.ScaleType.FIT_XY);
+        wxOverlay.addView(wxBlur, new FrameLayout.LayoutParams(-1, -1));
+        wxPanel = new LinearLayout(this);
+        wxPanel.setOrientation(LinearLayout.VERTICAL);
+        wxPanel.setPadding(dp(22), dp(18), dp(22), dp(18));
+        wxPanel.setClipChildren(false);
+        wxPanel.setClipToPadding(false);
+        FrameLayout.LayoutParams pl = new FrameLayout.LayoutParams(dp(372), -2, Gravity.TOP | Gravity.START);
+        pl.setMargins(dp(40), dp(20), 0, 0);
+        wxOverlay.addView(wxPanel, pl);
+        outer.addView(wxOverlay, new FrameLayout.LayoutParams(-1, -1));
+    }
+
+    private void openWeather() {
+        if (wxOpen) return;
+        wxOpen = true;
+        applyCcTint();
+        GradientDrawable bg = new GradientDrawable();
+        bg.setCornerRadius(dp(28));
+        bg.setColor(ccFill());
+        bg.setStroke(Math.max(1, dp(1)), 0x2EFFFFFF);
+        wxPanel.setBackground(bg);
+        fillWeatherPanel();
+        Drawable backdrop = ccBackdrop();
+        wxBlur.setImageDrawable(backdrop);
+        wxBlur.setBackgroundColor(backdrop == null ? 0x99000000 : 0);
+        mainRoot.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
+        wxOverlay.setVisibility(View.VISIBLE);
+        wxBlur.setAlpha(0f);
+        wxBlur.animate().alpha(1f).setInterpolator(EASE).setDuration(300).withEndAction(new Runnable() {
+            @Override public void run() { if (wxOpen && wxBlur.getDrawable() != null) mainRoot.setVisibility(View.INVISIBLE); }
+        }).start();
+        wxPanel.setAlpha(0f);
+        wxPanel.setTranslationX(-dp(24));
+        wxPanel.setTranslationY(-dp(16));
+        wxPanel.setScaleX(0.94f);
+        wxPanel.setScaleY(0.94f);
+        wxPanel.setPivotX(0);
+        wxPanel.setPivotY(0);
+        wxPanel.animate().alpha(1f).translationX(0).translationY(0).scaleX(1f).scaleY(1f)
+                .setStartDelay(40).setInterpolator(GLIDE).setDuration(480).withLayer().start();
+        refreshWeather(System.currentTimeMillis() - prefs.getLong("weather_time", 0) > 10 * 60 * 1000L);
+    }
+
+    private void closeWeather() {
+        if (!wxOpen) return;
+        wxOpen = false;
+        mainRoot.setVisibility(View.VISIBLE);
+        wxBlur.animate().cancel();
+        wxBlur.animate().alpha(0f).setInterpolator(EASE).setDuration(260).start();
+        wxPanel.animate().cancel();
+        wxPanel.animate().alpha(0f).translationX(-dp(16)).translationY(-dp(8)).scaleX(0.97f).scaleY(0.97f)
+                .setStartDelay(0).setInterpolator(EASE).setDuration(220).withLayer()
+                .withEndAction(new Runnable() {
+                    @Override public void run() {
+                        if (!wxOpen) { wxOverlay.setVisibility(View.INVISIBLE); wxBlur.setImageDrawable(null); }
+                    }
+                }).start();
+        mainRoot.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS);
+        if (weatherPill != null && weatherPill.getVisibility() == View.VISIBLE) weatherPill.requestFocus();
+    }
+
+    private TextView wxText(String t, int sp, int colour, boolean medium) {
+        TextView v = new TextView(this);
+        v.setText(t);
+        v.setTextSize(sp);
+        v.setTextColor(colour);
+        v.setTypeface(Typeface.create(medium ? "sans-serif-medium" : "sans-serif", Typeface.NORMAL));
+        v.setSingleLine(true);
+        v.setEllipsize(TextUtils.TruncateAt.END);
+        return v;
+    }
+
+    private void fillWeatherPanel() {
+        wxPanel.removeAllViews();
+        Weather.Data d = weatherData;
+        String city = prefs.getString("weather_city", "");
+        wxPanel.addView(wxText(city.isEmpty() ? "My Location" : city, 18, Color.WHITE, true));
+        wxPanel.addView(wxText(prefs.getBoolean("weather_fixed", false) ? "Chosen city" : "From this TV's internet connection",
+                12, 0x99FFFFFF, false));
+        if (d == null) {
+            TextView wait = wxText("Getting the weather…", 16, 0xCCFFFFFF, false);
+            wait.setPadding(0, dp(24), 0, dp(24));
+            wxPanel.addView(wait);
+        } else {
+            LinearLayout big = new LinearLayout(this);
+            big.setGravity(Gravity.CENTER_VERTICAL);
+            TextView t = wxText(d.temp + "°", 52, Color.WHITE, false);
+            t.setTypeface(Typeface.create("sans-serif-light", Typeface.NORMAL));
+            big.addView(t, new LinearLayout.LayoutParams(0, -2, 1f));
+            ImageView ic = new ImageView(this);
+            ic.setImageBitmap(Art.weather(d.code, d.day, dp(56)));
+            big.addView(ic, new LinearLayout.LayoutParams(dp(56), dp(56)));
+            LinearLayout.LayoutParams bl = new LinearLayout.LayoutParams(-1, -2);
+            bl.setMargins(0, dp(2), 0, 0);
+            wxPanel.addView(big, bl);
+            wxPanel.addView(wxText(Weather.describe(d.code), 17, Color.WHITE, true));
+            wxPanel.addView(wxText("Feels like " + d.feels + "°   ·   H " + d.high + "°  L " + d.low + "°",
+                    14, 0xB3FFFFFF, false));
+
+            String[][] tiles = {
+                    {"UV INDEX", d.uv < 0 ? "–" : String.valueOf(d.uv), Weather.uvWord(d.uv)},
+                    {"AIR QUALITY", d.aqi < 0 ? "–" : String.valueOf(d.aqi), Weather.aqiWord(d.aqi)},
+                    {"HUMIDITY", d.humidity + "%", ""},
+                    {"WIND", d.wind + " km/h", d.wind >= 40 ? "Strong" : d.wind >= 20 ? "Moderate" : "Light"},
+                    {"SUNRISE", d.sunrise, ""},
+                    {"SUNSET", d.sunset, ""}};
+            for (int r = 0; r < 2; r++) {
+                LinearLayout line = new LinearLayout(this);
+                for (int c = 0; c < 3; c++) {
+                    String[] tt = tiles[r * 3 + c];
+                    LinearLayout tile = new LinearLayout(this);
+                    tile.setOrientation(LinearLayout.VERTICAL);
+                    tile.setPadding(dp(10), dp(7), dp(8), dp(7));
+                    GradientDrawable tb = new GradientDrawable();
+                    tb.setCornerRadius(dp(14));
+                    tb.setColor(0x1FFFFFFF);
+                    tile.setBackground(tb);
+                    TextView lab = wxText(tt[0], 10, 0x99FFFFFF, true);
+                    lab.setLetterSpacing(0.08f);
+                    tile.addView(lab);
+                    tile.addView(wxText(tt[1], 16, Color.WHITE, true));
+                    tile.addView(wxText(tt[2].isEmpty() ? " " : tt[2], 11, 0x99FFFFFF, false));
+                    LinearLayout.LayoutParams tl = new LinearLayout.LayoutParams(0, -2, 1f);
+                    if (c < 2) tl.setMargins(0, 0, dp(8), 0);
+                    line.addView(tile, tl);
+                }
+                LinearLayout.LayoutParams ll = new LinearLayout.LayoutParams(-1, -2);
+                ll.setMargins(0, dp(r == 0 ? 14 : 8), 0, 0);
+                wxPanel.addView(line, ll);
+            }
+
+            TextView nh = wxText("NEXT 6 HOURS", 10, 0x99FFFFFF, true);
+            nh.setLetterSpacing(0.08f);
+            nh.setPadding(0, dp(14), 0, dp(6));
+            wxPanel.addView(nh);
+            LinearLayout hrs = new LinearLayout(this);
+            for (Weather.Hour x : d.hours) {
+                LinearLayout col = new LinearLayout(this);
+                col.setOrientation(LinearLayout.VERTICAL);
+                col.setGravity(Gravity.CENTER_HORIZONTAL);
+                col.addView(wxText(x.label, 12, 0xCCFFFFFF, true));
+                ImageView hi = new ImageView(this);
+                hi.setImageBitmap(Art.weather(x.code, x.day, dp(26)));
+                LinearLayout.LayoutParams hil = new LinearLayout.LayoutParams(dp(26), dp(26));
+                hil.setMargins(0, dp(3), 0, dp(3));
+                col.addView(hi, hil);
+                col.addView(wxText(x.temp + "°", 15, Color.WHITE, true));
+                col.addView(wxText(x.rain >= 20 ? x.rain + "%" : " ", 11, 0xFF64D2FF, true));
+                hrs.addView(col, new LinearLayout.LayoutParams(0, -2, 1f));
+            }
+            wxPanel.addView(hrs, new LinearLayout.LayoutParams(-1, -2));
+        }
+        LinearLayout buttons = new LinearLayout(this);
+        buttons.setClipChildren(false);
+        buttons.setClipToPadding(false);
+        View choose = pill("ic_search", "Choose City", "Choose City", new Runnable() {
+            @Override public void run() { chooseCity(); }
+        });
+        buttons.addView(choose, new LinearLayout.LayoutParams(-2, dp(34)));
+        View mine = pill("ic_wifi", "My Location", "Use My Location", new Runnable() {
+            @Override public void run() { useMyLocation(); }
+        });
+        LinearLayout.LayoutParams ml = new LinearLayout.LayoutParams(-2, dp(34));
+        ml.setMargins(dp(10), 0, 0, 0);
+        buttons.addView(mine, ml);
+        LinearLayout.LayoutParams bl2 = new LinearLayout.LayoutParams(-2, -2);
+        bl2.setMargins(0, dp(14), 0, 0);
+        wxPanel.addView(buttons, bl2);
+        muteClicks(wxPanel);
+        choose.requestFocus();
+    }
+
+    private void chooseCity() {
+        askText("Choose a City", "City name", "", new TextResult() {
+            @Override public void done(final String q) {
+                new Thread(new Runnable() {
+                    @Override public void run() {
+                        List<Weather.Place> found;
+                        try { found = Weather.search(q); } catch (Exception e) { found = new ArrayList<>(); }
+                        final List<Weather.Place> list = found;
+                        ui.post(new Runnable() {
+                            @Override public void run() {
+                                if (list.isEmpty()) {
+                                    Toast.makeText(MainActivity.this, "No city found for “" + q + "”", Toast.LENGTH_SHORT).show();
+                                    return;
+                                }
+                                String[] names = new String[list.size()];
+                                for (int i = 0; i < names.length; i++) {
+                                    Weather.Place p = list.get(i);
+                                    names[i] = p.name + (p.detail.isEmpty() ? "" : "  —  " + p.detail);
+                                }
+                                new AlertDialog.Builder(MainActivity.this)
+                                        .setTitle("Choose a City")
+                                        .setItems(names, new DialogInterface.OnClickListener() {
+                                            @Override public void onClick(DialogInterface d, int which) {
+                                                Weather.Place p = list.get(which);
+                                                prefs.edit().putBoolean("weather_fixed", true)
+                                                        .putFloat("lat", (float) p.lat).putFloat("lon", (float) p.lon)
+                                                        .putString("weather_city", p.name).apply();
+                                                weatherData = null;
+                                                if (wxOpen) fillWeatherPanel();
+                                                refreshWeather(true);
+                                                if (settingsOpen) refreshPage();
+                                            }
+                                        })
+                                        .show();
+                            }
+                        });
+                    }
+                }).start();
+            }
+        });
+    }
+
+    private void useMyLocation() {
+        prefs.edit().putBoolean("weather_fixed", false).remove("loc_time").remove("weather_city").apply();
+        weatherData = null;
+        if (wxOpen) fillWeatherPanel();
+        refreshWeather(true);
+        if (settingsOpen) refreshPage();
+    }
+
+    private void pageWeather() {
+        final boolean on = prefs.getBoolean("weather_pill", true);
+        row("ic_weather", 0xFF64D2FF, "Weather Pill", on ? "On" : "Off", false, new Runnable() {
+            @Override public void run() {
+                prefs.edit().putBoolean("weather_pill", !prefs.getBoolean("weather_pill", true)).apply();
+                showCachedWeather();
+                refreshPage();
+            }
+        });
+        String city = prefs.getString("weather_city", "");
+        row("ic_search", 0xFFFF9F0A, "City", (prefs.getBoolean("weather_fixed", false) ? "" : "Auto · ")
+                + (city.isEmpty() ? "My Location" : city), true, new Runnable() {
+            @Override public void run() { chooseCity(); }
+        });
+        row("ic_wifi", 0xFF30D158, "Use My Location", "", false, new Runnable() {
+            @Override public void run() {
+                useMyLocation();
+                Toast.makeText(MainActivity.this, "Using this TV's location", Toast.LENGTH_SHORT).show();
+            }
+        });
+        row("ic_weather", 0xFF5AC8FA, "Weather Details", "", false, new Runnable() {
+            @Override public void run() { closeSettings(false); openWeather(); }
+        });
+    }
+
+    // ---------- Setup ----------
+
+    private void pageSetup() {
+        row("ic_download", 0xFF30D158, "Make TV Home the Home App", prefs.getBoolean("adb_setup_ok", false) ? "Done" : "", true, new Runnable() {
+            @Override public void run() {
+                startActivity(new Intent(MainActivity.this, SetupActivity.class).putExtra("step", 2));
+            }
+        });
+        row("ic_remote", 0xFFD1D1D6, "Turn On Button Remapping", "", false, new Runnable() {
+            @Override public void run() {
+                Toast.makeText(MainActivity.this, "Connecting to this TV… if it asks, tick Always allow.", Toast.LENGTH_LONG).show();
+                new Thread(new Runnable() {
+                    @Override public void run() {
+                        String msg;
+                        try {
+                            AdbClient.runSetup(MainActivity.this, null, true);
+                            msg = "Button remapping is on";
+                        } catch (Exception e) {
+                            msg = "Couldn't connect. Turn on debugging in Developer options, then try again.";
+                        }
+                        final String m = msg;
+                        ui.post(new Runnable() {
+                            @Override public void run() { Toast.makeText(MainActivity.this, m, Toast.LENGTH_LONG).show(); }
+                        });
+                    }
+                }).start();
+            }
+        });
+        row("ic_person", 0xFFFF9F0A, "Run Setup Again", "", true, new Runnable() {
+            @Override public void run() { startActivity(new Intent(MainActivity.this, SetupActivity.class)); }
+        });
     }
 }
