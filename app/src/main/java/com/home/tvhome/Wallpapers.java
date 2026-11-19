@@ -52,6 +52,26 @@ final class Wallpapers {
     static final String MODE_MINE = "mine";
     static final String MODE_COLOUR = "colour";
     static final String MODE_PHONE = "phone";
+    static final String MODE_ONLINE = "online";
+    static final String MODE_GRADIENT = "gradient";
+    static final String MODE_EMOJI = "emoji";
+    static final String MODE_FRACTAL = "fractal";
+
+    /** Online picture sources: {key, name}. */
+    static final String[][] SOURCES = {
+            {"bing", "Bing Daily Scenery"}, {"wallhaven", "Wallhaven"}, {"nasa", "NASA Images"},
+            {"wikimedia", "Wikimedia Commons"}, {"met", "The Met Museum"}, {"cleveland", "Cleveland Museum of Art"},
+            {"unsplash", "Unsplash"}};
+    static final String[] TOPICS = {"Nature", "Landscape", "Mountains", "Ocean", "Space", "Night Sky", "Cities",
+            "Architecture", "Forest", "Flowers", "Abstract", "Paintings", "Animals", "Minimal"};
+    /** Change photo every: minutes (0 means with the time of day). */
+    static final int[] EVERY = {0, 15, 30, 60, 180, 1440};
+    static final String[] EVERY_NAMES = {"With the time of day", "15 minutes", "30 minutes", "1 hour", "3 hours", "Once a day"};
+
+    static String sourceName(String key) {
+        for (String[] s : SOURCES) if (s[0].equals(key)) return s[1];
+        return SOURCES[0][1];
+    }
 
     /** The photo sent from your phone (Send from Phone). */
     static File phoneFile(android.content.Context c) {
@@ -113,17 +133,32 @@ final class Wallpapers {
         final String day = new SimpleDateFormat("yyyyMMdd", Locale.US).format(new Date());
         final String mode = mode();
         if (MODE_COLOUR.equals(mode)) return;   // the app's colour is the backdrop; no photos needed
-        final String key = mode + "|" + slot + "|" + day;
+        int every = prefs.getInt("wp_every", 0);
+        String when = every > 0 ? String.valueOf(System.currentTimeMillis() / (every * 60000L)) : slot + "|" + day;
+        String what = MODE_ONLINE.equals(mode) ? prefs.getString("wp_source", "bing") + "|" + prefs.getString("wp_topic", "Nature")
+                + "|" + prefs.getInt("wp_quality", 0) : "";
+        boolean drawn = MODE_GRADIENT.equals(mode) || MODE_EMOJI.equals(mode) || MODE_FRACTAL.equals(mode);
+        final String key = drawn ? mode + "|" + prefs.getInt("wp_cfg", 0) : mode + "|" + what + "|" + when;
         if (!shuffle && key.equals(shownKey)) return;
         if (busy) return;
         busy = true;
         final int targetW = ctx.getResources().getDisplayMetrics().widthPixels;
+        final int targetH = ctx.getResources().getDisplayMetrics().heightPixels;
         new Thread(new Runnable() {
             @Override public void run() {
                 Bitmap bmp = null;
                 String credit = null;
                 try {
-                    if (MODE_MINE.equals(mode)) {
+                    if (MODE_GRADIENT.equals(mode) || MODE_EMOJI.equals(mode) || MODE_FRACTAL.equals(mode)) {
+                        bmp = drawn(mode, Math.max(targetW, targetH), Math.min(targetW, targetH));
+                        credit = "";
+                    } else if (MODE_ONLINE.equals(mode)) {
+                        String[] got = pickOnline();
+                        if (got != null) {
+                            bmp = decode(new File(got[0]), targetW);
+                            credit = got[1];
+                        }
+                    } else if (MODE_MINE.equals(mode)) {
                         File f = pickMine(slot);
                         if (f != null) bmp = decode(f, targetW);
                     } else if (MODE_PHONE.equals(mode)) {
@@ -269,6 +304,220 @@ final class Wallpapers {
         return out;
     }
 
+
+    // ---------------------------------------------------------------- drawn wallpapers
+
+    private Bitmap drawn(String mode, int w, int h) {
+        if (MODE_EMOJI.equals(mode)) {
+            int i = prefs.getInt("emoji_index", 0);
+            String e;
+            int b1, b2;
+            if (i < 0 || i >= WallArt.EMOJI.length) {
+                e = prefs.getString("emoji_custom", "✨");
+                b1 = prefs.getInt("emoji_bg1", 0xFF1B1035);
+                b2 = prefs.getInt("emoji_bg2", 0xFF3D2370);
+            } else {
+                e = WallArt.EMOJI[i][1];
+                b1 = WallArt.parse(WallArt.EMOJI[i][2], 0xFF111111);
+                b2 = WallArt.parse(WallArt.EMOJI[i][3], 0xFF333333);
+            }
+            return WallArt.emoji(w, h, e, b1, b2, prefs.getInt("emoji_size", 1));
+        }
+        if (MODE_FRACTAL.equals(mode)) {
+            int i = Math.max(0, Math.min(WallArt.PRESETS.length - 1, prefs.getInt("fractal_preset", 0)));
+            String[] pr = WallArt.PRESETS[i];
+            int[] cols = {WallArt.parse(pr[1], 0), WallArt.parse(pr[2], 0), WallArt.parse(pr[3], 0)};
+            return WallArt.fractalGlass(w, h, cols, prefs.getInt("fractal_ribs", 18));
+        }
+        return WallArt.gradient(w, h, gradientColours(prefs), gradientStyle(prefs));
+    }
+
+    static int[] gradientColours(SharedPreferences prefs) {
+        int i = prefs.getInt("grad_preset", 0);
+        if (i >= 0 && i < WallArt.PRESETS.length) {
+            String[] pr = WallArt.PRESETS[i];
+            return new int[]{WallArt.parse(pr[1], 0), WallArt.parse(pr[2], 0), WallArt.parse(pr[3], 0)};
+        }
+        int n = Math.max(1, Math.min(3, prefs.getInt("grad_count", 2)));
+        int[] all = {prefs.getInt("grad_c1", 0xFF14213D), prefs.getInt("grad_c2", 0xFF5B2A86), prefs.getInt("grad_c3", 0xFFE04F9F)};
+        int[] out = new int[n];
+        System.arraycopy(all, 0, out, 0, n);
+        return out;
+    }
+
+    static int gradientStyle(SharedPreferences prefs) {
+        int i = prefs.getInt("grad_preset", 0);
+        if (i >= 0 && i < WallArt.PRESETS.length) return Integer.parseInt(WallArt.PRESETS[i][4]);
+        return prefs.getInt("grad_style", 0);
+    }
+
+    // ---------------------------------------------------------------- online pictures
+
+    /** Returns {local file, credit} for a picture from the chosen online source, or a saved one when offline. */
+    private String[] pickOnline() {
+        String source = prefs.getString("wp_source", "bing");
+        String topic = prefs.getString("wp_topic", "Nature");
+        boolean uhd = prefs.getInt("wp_quality", 0) == 1;
+        File dir = new File(ctx.getCacheDir(), "online");
+        dir.mkdirs();
+        String tag = Integer.toHexString((source + "|" + topic + "|" + uhd).hashCode());
+        File cache = new File(dir, "list_" + tag + ".txt");
+        List<String[]> items = readList(cache);
+        boolean stale = System.currentTimeMillis() - cache.lastModified() > 24L * 3600 * 1000;
+        if (items.isEmpty() || stale) {
+            List<String[]> fresh = new ArrayList<>();
+            try { fresh = onlineList(source, topic, uhd); } catch (Exception ignored) { }
+            if (!fresh.isEmpty()) {
+                items = fresh;
+                try {
+                    FileWriter w = new FileWriter(cache);
+                    for (String[] it : fresh) w.write(it[0] + "\t" + it[1].replace('\t', ' ').replace('\n', ' ') + "\n");
+                    w.close();
+                } catch (Exception ignored) { }
+            }
+        }
+        String last = prefs.getString("wp_last", "");
+        for (int attempt = 0; attempt < 6 && !items.isEmpty(); attempt++) {
+            String[] it = items.get(rnd.nextInt(items.size()));
+            if (items.size() > 1 && it[0].equals(last)) continue;
+            File f = new File(dir, "img_" + Integer.toHexString(it[0].hashCode()) + ".jpg");
+            try {
+                if (!f.exists()) download(it[0], f);
+                if (!landscape(f)) { f.delete(); items.remove(it); continue; }
+                prefs.edit().putString("wp_last", it[0]).putString("credit_" + f.getName(), it[1]).apply();
+                tidy(dir);
+                return new String[]{f.getPath(), it[1]};
+            } catch (Exception e) {
+                f.delete();
+            }
+        }
+        File[] cached = dir.listFiles();
+        List<File> imgs = new ArrayList<>();
+        if (cached != null) for (File f : cached) if (f.getName().startsWith("img_")) imgs.add(f);
+        if (imgs.isEmpty()) return null;
+        File f = imgs.get(rnd.nextInt(imgs.size()));
+        return new String[]{f.getPath(), prefs.getString("credit_" + f.getName(), "")};
+    }
+
+    private static boolean landscape(File f) {
+        BitmapFactory.Options o = new BitmapFactory.Options();
+        o.inJustDecodeBounds = true;
+        BitmapFactory.decodeFile(f.getPath(), o);
+        return o.outWidth > 0 && o.outHeight > 0 && o.outWidth / (float) o.outHeight >= 1.25f && o.outWidth >= 900;
+    }
+
+    private List<String[]> onlineList(String source, String topic, boolean uhd) throws Exception {
+        String q = URLEncoder.encode(topic, "UTF-8");
+        List<String[]> out = new ArrayList<>();
+        if ("bing".equals(source)) {
+            for (int idx = 0; idx <= 7; idx += 7) {
+                org.json.JSONArray imgs = new JSONObject(getText("https://www.bing.com/HPImageArchive.aspx?format=js&n=8&mkt=en-IN&idx=" + idx))
+                        .getJSONArray("images");
+                for (int i = 0; i < imgs.length(); i++) {
+                    JSONObject im = imgs.getJSONObject(i);
+                    String base = im.optString("urlbase", "");
+                    if (base.isEmpty()) continue;
+                    String credit = im.optString("copyright", "").replaceAll("\\s*\\(©[^)]*\\)", "");
+                    out.add(new String[]{"https://www.bing.com" + base + (uhd ? "_UHD.jpg" : "_1920x1080.jpg"),
+                            (credit.isEmpty() ? "" : credit + "  ·  ") + "Bing"});
+                }
+            }
+        } else if ("wallhaven".equals(source)) {
+            org.json.JSONArray data = new JSONObject(getText("https://wallhaven.cc/api/v1/search?q=" + q
+                    + "&categories=100&purity=100&ratios=16x9&sorting=toplist&topRange=1M&atleast="
+                    + (uhd ? "3840x2160" : "1920x1080"))).getJSONArray("data");
+            for (int i = 0; i < data.length(); i++) {
+                String path = data.getJSONObject(i).optString("path", "");
+                if (!path.isEmpty()) out.add(new String[]{path, "Wallhaven"});
+            }
+        } else if ("nasa".equals(source)) {
+            String topicQ = "Space".equals(topic) || "Night Sky".equals(topic) || "Nature".equals(topic)
+                    ? URLEncoder.encode("galaxy nebula", "UTF-8") : q;
+            org.json.JSONArray items = new JSONObject(getText("https://images-api.nasa.gov/search?media_type=image&page_size=60&q=" + topicQ))
+                    .getJSONObject("collection").getJSONArray("items");
+            for (int i = 0; i < items.length(); i++) {
+                JSONObject it = items.getJSONObject(i);
+                org.json.JSONArray links = it.optJSONArray("links");
+                if (links == null || links.length() == 0) continue;
+                String href = links.getJSONObject(0).optString("href", "");
+                if (!href.contains("~thumb")) continue;
+                href = href.replace("~thumb", uhd ? "~orig" : "~large").replace(" ", "%20");
+                String title = it.getJSONArray("data").getJSONObject(0).optString("title", "");
+                out.add(new String[]{href, (title.isEmpty() ? "" : shorten(title) + "  ·  ") + "NASA"});
+            }
+        } else if ("met".equals(source)) {
+            org.json.JSONArray ids = new JSONObject(getText("https://collectionapi.metmuseum.org/public/collection/v1/search?hasImages=true&isPublicDomain=true&q="
+                    + ("Paintings".equals(topic) ? "landscape" : q))).optJSONArray("objectIDs");
+            if (ids != null) {
+                List<Integer> pick = new ArrayList<>();
+                for (int i = 0; i < Math.min(ids.length(), 200); i++) pick.add(ids.getInt(i));
+                java.util.Collections.shuffle(pick, rnd);
+                for (int i = 0; i < pick.size() && out.size() < 24 && i < 40; i++) {
+                    try {
+                        JSONObject o = new JSONObject(getText("https://collectionapi.metmuseum.org/public/collection/v1/objects/" + pick.get(i)));
+                        String img = o.optString(uhd ? "primaryImage" : "primaryImageSmall", "");
+                        if (img.isEmpty()) img = o.optString("primaryImage", "");
+                        if (img.isEmpty()) continue;
+                        String artist = o.optString("artistDisplayName", "");
+                        out.add(new String[]{img.replace(" ", "%20"), shorten(o.optString("title", "Artwork"))
+                                + (artist.isEmpty() ? "" : " — " + shorten(artist)) + "  ·  The Met"});
+                    } catch (Exception ignored) { }
+                }
+            }
+        } else if ("cleveland".equals(source)) {
+            org.json.JSONArray data = new JSONObject(getText("https://openaccess-api.clevelandart.org/api/artworks/?has_image=1&cc0=1&limit=60&skip="
+                    + rnd.nextInt(60) + "&q=" + ("Paintings".equals(topic) ? "landscape painting" : q))).getJSONArray("data");
+            for (int i = 0; i < data.length(); i++) {
+                JSONObject a = data.getJSONObject(i);
+                JSONObject images = a.optJSONObject("images");
+                if (images == null) continue;
+                JSONObject im = images.optJSONObject(uhd ? "print" : "web");
+                if (im == null) im = images.optJSONObject("web");
+                if (im == null) continue;
+                int iw = im.optInt("width"), ih = im.optInt("height");
+                if (ih <= 0 || iw / (float) ih < 1.25f) continue;
+                String who = "";
+                org.json.JSONArray cr = a.optJSONArray("creators");
+                if (cr != null && cr.length() > 0) who = cr.getJSONObject(0).optString("description", "").replaceAll("\\s*\\(.*", "");
+                out.add(new String[]{im.optString("url"), shorten(a.optString("title", "Artwork"))
+                        + (who.isEmpty() ? "" : " — " + shorten(who)) + "  ·  Cleveland Museum of Art"});
+            }
+        } else if ("unsplash".equals(source)) {
+            String key = prefs.getString("unsplash_key", "").trim();
+            if (!key.isEmpty()) {
+                org.json.JSONArray arr = new org.json.JSONArray(getText("https://api.unsplash.com/photos/random?count=24&orientation=landscape&content_filter=high&query="
+                        + q + "&client_id=" + URLEncoder.encode(key, "UTF-8")));
+                for (int i = 0; i < arr.length(); i++) {
+                    JSONObject ph = arr.getJSONObject(i);
+                    String raw = ph.getJSONObject("urls").optString("raw", "");
+                    if (raw.isEmpty()) continue;
+                    String who = ph.optJSONObject("user") == null ? "" : ph.getJSONObject("user").optString("name", "");
+                    out.add(new String[]{raw + "&w=" + (uhd ? 3840 : 1920) + "&q=80&fm=jpg",
+                            "Photo by " + (who.isEmpty() ? "an Unsplash photographer" : shorten(who)) + " on Unsplash"});
+                }
+            } else {
+                // No key yet: random free photos (they ignore the topic).
+                for (int i = 0; i < 16; i++) {
+                    out.add(new String[]{"https://picsum.photos/seed/tvhome" + rnd.nextInt(100000) + "/"
+                            + (uhd ? "3840/2160" : "1920/1080"), "Random photo  ·  Picsum"});
+                }
+            }
+        } else {   // wikimedia
+            int w = uhd ? 3840 : 1920;
+            String search = topic + " filetype:bitmap incategory:\"Featured_pictures_on_Wikimedia_Commons\"";
+            out.addAll(commons("https://commons.wikimedia.org/w/api.php?action=query&format=json"
+                    + "&generator=search&gsrnamespace=6&gsrlimit=50&gsrsearch=" + URLEncoder.encode(search, "UTF-8")
+                    + "&prop=imageinfo&iiprop=url%7Csize%7Cmime%7Cextmetadata"
+                    + "&iiextmetadatafilter=Artist%7CLicenseShortName&iiurlwidth=" + w));
+        }
+        return out;
+    }
+
+    private static String shorten(String s) {
+        s = s.replace('\t', ' ').replace('\n', ' ').trim();
+        return s.length() > 48 ? s.substring(0, 47) + "…" : s;
+    }
+
     private List<String[]> fetchCategory(String cat) throws Exception {
         // Standard Commons thumbnail sizes load fastest.
         int w = ctx.getResources().getDisplayMetrics().widthPixels > 1280 ? 1920 : 1280;
@@ -278,6 +527,10 @@ final class Wallpapers {
                 + "&prop=imageinfo&iiprop=url%7Csize%7Cmime%7Cextmetadata"
                 + "&iiextmetadatafilter=Artist%7CLicenseShortName"
                 + "&iiurlwidth=" + w;
+        return commons(url);
+    }
+
+    private List<String[]> commons(String url) throws Exception {
         JSONObject root = new JSONObject(getText(url));
         List<String[]> out = new ArrayList<>();
         JSONObject pages = root.optJSONObject("query") == null ? null

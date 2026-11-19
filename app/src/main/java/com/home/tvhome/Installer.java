@@ -193,7 +193,7 @@ final class Installer {
 
     // ---------------------------------------------------------------- download and install
 
-    private void download(final String url, final String name) {
+    void download(final String url, final String name) {
         toast("Downloading " + name + "…");
         new Thread(new Runnable() {
             @Override public void run() {

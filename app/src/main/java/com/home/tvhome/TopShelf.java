@@ -40,8 +40,13 @@ final class TopShelf {
 
     // ---------- Movies & shows ----------
 
-    static List<Card> watch() {
-        List<Card> movies = catalog("movie"), shows = catalog("series");
+    static final String[] GENRES = {"Action", "Adventure", "Animation", "Comedy", "Crime", "Documentary", "Drama",
+            "Family", "Fantasy", "History", "Horror", "Mystery", "Romance", "Sci-Fi", "Thriller", "War", "Western"};
+
+    /** kind: 0 movies and series, 1 movies, 2 series. genre: "" for all. */
+    static List<Card> watch(int kind, String genre) {
+        List<Card> movies = kind == 2 ? new ArrayList<Card>() : catalog("movie", genre);
+        List<Card> shows = kind == 1 ? new ArrayList<Card>() : catalog("series", genre);
         List<Card> out = new ArrayList<>();
         for (int i = 0; i < Math.max(movies.size(), shows.size()) && out.size() < 20; i++) {
             if (i < movies.size()) out.add(movies.get(i));
@@ -50,12 +55,14 @@ final class TopShelf {
         return out;
     }
 
-    private static List<Card> catalog(String type) {
+    private static List<Card> catalog(String type, String genre) {
         List<Card> out = new ArrayList<>();
         try {
-            JSONArray metas = new JSONObject(text("https://v3-cinemeta.strem.io/catalog/" + type + "/top.json"))
-                    .getJSONArray("metas");
-            for (int i = 0; i < metas.length() && out.size() < 10; i++) {
+            String url = "https://v3-cinemeta.strem.io/catalog/" + type + "/top"
+                    + (genre == null || genre.isEmpty() ? "" : "/genre=" + java.net.URLEncoder.encode(genre, "UTF-8").replace("+", "%20"))
+                    + ".json";
+            JSONArray metas = new JSONObject(text(url)).getJSONArray("metas");
+            for (int i = 0; i < metas.length() && out.size() < 14; i++) {
                 JSONObject m = metas.getJSONObject(i);
                 String bg = m.optString("background", "");
                 String name = m.optString("name", "");
@@ -96,25 +103,57 @@ final class TopShelf {
 
     // ---------- News ----------
 
-    private static final String[][] FEEDS = {
-            {"NDTV", "https://feeds.feedburner.com/ndtvnews-top-stories"},
-            {"The Times of India", "https://timesofindia.indiatimes.com/rssfeedstopstories.cms"},
-            {"The Hindu", "https://www.thehindu.com/news/national/feeder/default.rss"},
-            {"The Indian Express", "https://indianexpress.com/section/india/feed/"},
+    /** Newsrooms: {id, name, group, feed}. */
+    static final String[][] NEWSROOMS = {
+            {"ndtv", "NDTV", "India", "https://feeds.feedburner.com/ndtvnews-top-stories"},
+            {"toi", "The Times of India", "India", "https://timesofindia.indiatimes.com/rssfeedstopstories.cms"},
+            {"hindu", "The Hindu", "India", "https://www.thehindu.com/news/national/feeder/default.rss"},
+            {"ie", "The Indian Express", "India", "https://indianexpress.com/section/india/feed/"},
+            {"ht", "Hindustan Times", "India", "https://www.hindustantimes.com/feeds/rss/india-news/rssfeed.xml"},
+            {"indiatoday", "India Today", "India", "https://www.indiatoday.in/rss/1206578"},
+            {"news18", "News18", "India", "https://www.news18.com/commonfeeds/v1/eng/rss/india.xml"},
+            {"bbc", "BBC News", "International", "https://feeds.bbci.co.uk/news/world/rss.xml"},
+            {"guardian", "The Guardian", "International", "https://www.theguardian.com/world/rss"},
+            {"nyt", "The New York Times", "International", "https://rss.nytimes.com/services/xml/rss/nyt/World.xml"},
+            {"aljazeera", "Al Jazeera", "International", "https://www.aljazeera.com/xml/rss/all.xml"},
+            {"sky", "Sky News", "International", "https://feeds.skynews.com/feeds/rss/world.xml"},
+            {"dw", "Deutsche Welle", "International", "https://rss.dw.com/xml/rss-en-world"},
+            {"france24", "France 24", "International", "https://www.france24.com/en/rss"},
+            {"npr", "NPR", "International", "https://feeds.npr.org/1004/rss.xml"},
+            {"cnn", "CNN", "International", "http://rss.cnn.com/rss/edition_world.rss"},
+            {"cbs", "CBS News", "International", "https://www.cbsnews.com/latest/rss/world"},
+            {"abc", "ABC News Australia", "International", "https://www.abc.net.au/news/feed/2942460/rss.xml"},
+            {"japantimes", "The Japan Times", "International", "https://www.japantimes.co.jp/feed/"},
+            {"ndtvworld", "NDTV World", "International", "https://feeds.feedburner.com/ndtvnews-world-news"},
+            {"bbchindi", "BBC News Hindi", "Indian languages", "https://feeds.bbci.co.uk/hindi/rss.xml"},
+            {"ndtvkhabar", "NDTV Khabar (Hindi)", "Indian languages", "https://feeds.feedburner.com/ndtvkhabar-india"},
+            {"bbcmarathi", "BBC News Marathi", "Indian languages", "https://feeds.bbci.co.uk/marathi/rss.xml"},
+            {"bbcgujarati", "BBC News Gujarati", "Indian languages", "https://feeds.bbci.co.uk/gujarati/rss.xml"},
+            {"bbctamil", "BBC News Tamil", "Indian languages", "https://feeds.bbci.co.uk/tamil/rss.xml"},
+            {"bbctelugu", "BBC News Telugu", "Indian languages", "https://feeds.bbci.co.uk/telugu/rss.xml"},
+            {"bbcbangla", "BBC News Bangla", "Indian languages", "https://feeds.bbci.co.uk/bengali/rss.xml"},
+            {"abpananda", "ABP Ananda (Bengali)", "Indian languages", "https://bengali.abplive.com/home/feed"},
+            {"bbcpunjabi", "BBC News Punjabi", "Indian languages", "https://feeds.bbci.co.uk/punjabi/rss.xml"},
+            {"bbcurdu", "BBC News Urdu", "Indian languages", "https://feeds.bbci.co.uk/urdu/rss.xml"},
     };
+    static final String NEWS_DEFAULT = "ndtv,toi,hindu,ie";
 
     private static final Pattern ITEM = Pattern.compile("<item[\\s>](.*?)</item>", Pattern.DOTALL);
     private static final Pattern IMG = Pattern.compile(
             "(https?://[^\"'<>\\s]+?\\.(?:jpe?g|png|webp)(?:\\?[^\"'<>\\s]*)?)", Pattern.CASE_INSENSITIVE);
 
-    static List<Card> news() {
+    static List<Card> news(java.util.Collection<String> ids) {
         List<Card> all = new ArrayList<>();
-        for (String[] f : FEEDS) {
+        List<String[]> feeds = new ArrayList<>();
+        for (String[] r : NEWSROOMS) if (ids.contains(r[0])) feeds.add(new String[]{r[1], r[3]});
+        if (feeds.isEmpty()) feeds.add(new String[]{NEWSROOMS[0][1], NEWSROOMS[0][3]});
+        int per = Math.max(3, 24 / feeds.size());
+        for (String[] f : feeds) {
             try {
                 String xml = text(f[1]);
                 Matcher it = ITEM.matcher(xml);
                 int n = 0;
-                while (it.find() && n < 6) {
+                while (it.find() && n < per) {
                     String item = it.group(1);
                     String title = clean(tag(item, "title"));
                     if (title.isEmpty()) continue;
@@ -137,7 +176,30 @@ final class TopShelf {
         Collections.sort(all, new Comparator<Card>() {
             @Override public int compare(Card a, Card b) { return Long.compare(b.time, a.time); }
         });
-        return all.size() > 20 ? new ArrayList<>(all.subList(0, 20)) : all;
+        return all.size() > 24 ? new ArrayList<>(all.subList(0, 24)) : all;
+    }
+
+    /** The article's own words, read from its page (paragraphs only). Blocking: call off the main thread. */
+    static String article(String link) {
+        if (link == null || !link.startsWith("http")) return null;
+        try {
+            String html = text(link);
+            html = html.replaceAll("(?is)<script.*?</script>", " ").replaceAll("(?is)<style.*?</style>", " ");
+            Matcher p = Pattern.compile("(?is)<p[^>]*>(.*?)</p>").matcher(html);
+            StringBuilder sb = new StringBuilder();
+            int n = 0;
+            while (p.find() && n < 30) {
+                String t = clean(p.group(1));
+                if (t.length() < 60 || t.startsWith("©") || t.toLowerCase(Locale.ROOT).contains("cookie")) continue;
+                if (sb.length() > 0) sb.append("\n\n");
+                sb.append(t);
+                n++;
+                if (sb.length() > 7000) break;
+            }
+            return sb.length() > 200 ? sb.toString() : null;
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     /** "2 h ago" for a news card. */
@@ -157,9 +219,19 @@ final class TopShelf {
 
     private static String image(String item) {
         // Prefer an explicit media / enclosure tag, then any picture link inside the item.
-        Matcher m = Pattern.compile("<(?:media:content|media:thumbnail|enclosure)[^>]*url=\"([^\"]+)\"",
-                Pattern.CASE_INSENSITIVE).matcher(item);
-        if (m.find()) return m.group(1).replace("&amp;", "&");
+        Matcher m = Pattern.compile("<(?:media:content|media:thumbnail|enclosure)\\b([^>]*)>", Pattern.CASE_INSENSITIVE).matcher(item);
+        String best = null;
+        int bestW = -1;
+        while (m.find()) {
+            String attrs = m.group(1);
+            Matcher u = Pattern.compile("url=[\"']([^\"']+)[\"']").matcher(attrs);
+            if (!u.find()) continue;
+            if (attrs.contains("type=") && !attrs.matches("(?s).*type=[\"']image.*")) continue;
+            Matcher w = Pattern.compile("width=[\"'](\\d+)[\"']").matcher(attrs);
+            int wv = w.find() ? Integer.parseInt(w.group(1)) : 0;
+            if (wv > bestW) { bestW = wv; best = u.group(1); }
+        }
+        if (best != null) return best.replace("&amp;", "&");
         m = IMG.matcher(item);
         return m.find() ? m.group(1).replace("&amp;", "&") : null;
     }
@@ -172,6 +244,7 @@ final class TopShelf {
                     .replaceAll(",overlay-[^,/]+", "").replaceAll(",pt-\\d+", "").replaceAll(",y_pad-\\d+", "");
         }
         if (url.contains("indianexpress.com") && url.contains("?w=")) return url.replaceAll("\\?w=\\d+", "?w=1280");
+        if (url.contains("ichef.bbci.co.uk")) return url.replaceAll("/(\\d{2,4})/", "/1024/");
         return url;
     }
 

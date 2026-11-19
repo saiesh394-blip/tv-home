@@ -32,6 +32,16 @@ Built for a Xiaomi Google TV with a modest graphics chip, so it's tuned to stay 
 - **Icon styles:** Original, Light (Apple TV), Dark or Glass tiles for the dock icons.
 - **Icon packs:** **Controls → Appearance → Icon pack** restyles the dock icons with any installed icon pack (ADW / Nova format).
 
+### New in 6.30–6.33
+
+- **Wallpapers:** online sources (Bing daily, Wallhaven, NASA, Wikimedia Commons, The Met, Cleveland Museum of Art, Unsplash) with topics, HD or 4K, and how often to change; gradients and solid colours; emoji patterns; fractal glass.
+- **Look & Style:** your own font (.ttf or .otf from Download or a USB drive), text colour and size, focus outline, animation speed, interface sounds, tinted, dark or black panels, 12/24-hour clock, optional app names in the dock, a sidebar and a Dynamic Island app pill.
+- **TV Controls:** Wi-Fi (scan, connect, forget), Bluetooth (pair, forget), Private DNS ad blocking with a test, TV Debloat (disable, remove and restore apps, with apps the TV needs protected), power and sleep timers, date and time, system text size, device info, VPN apps, and shortcuts to the TV's own settings. These use the TV's own debugging connection.
+- **Control Centre:** choose, order and remove tiles; notifications beside the panel.
+- **Recent Apps:** a card switcher (double-press Home), optionally with a picture of each app; Home-button override and start on boot.
+- **Top Shelf:** movies and series by genre with "where to watch" in your streaming apps; 30 newsrooms from India and around the world (including BBC in Hindi, Marathi, Tamil, Telugu, Bangla, Gujarati, Punjabi and Urdu) with full articles; Continue Watching that follows the dock.
+- **Back up and restore** settings to the Download folder, **search Settings**, and **check for updates** from this repository.
+
 ## Install
 
 You need a Mac or PC with `adb` ([Android platform tools](https://developer.android.com/tools/releases/platform-tools)) on the same Wi-Fi as the TV.

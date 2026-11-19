@@ -93,6 +93,27 @@ final class AdbClient implements Closeable {
         return result.toString("UTF-8").trim();
     }
 
+    /** Runs one command and returns its raw output (for pictures such as a screenshot). */
+    byte[] execBytes(String command) throws Exception {
+        int local = nextId++;
+        send(OPEN, local, 0, ("exec:" + command + "\0").getBytes("UTF-8"));
+        int remote = 0;
+        ByteArrayOutputStream result = new ByteArrayOutputStream();
+        while (true) {
+            Msg m = read();
+            if (m.arg1 != local) continue;
+            if (m.cmd == OKAY) { remote = m.arg0; continue; }
+            if (m.cmd == WRTE) {
+                result.write(m.data);
+                send(OKAY, local, m.arg0, new byte[0]);
+            } else if (m.cmd == CLSE) {
+                send(CLSE, local, remote != 0 ? remote : m.arg0, new byte[0]);
+                break;
+            }
+        }
+        return result.toByteArray();
+    }
+
     @Override public void close() {
         try { if (socket != null) socket.close(); } catch (Exception ignored) { }
     }
@@ -236,7 +257,8 @@ final class AdbClient implements Closeable {
             r.lines.append(r.home ? "✓  TV Home is the Home app\n" : "–  Couldn't change the Home app on this TV\n");
 
             String[] perms = {"android.permission.RECORD_AUDIO", "android.permission.READ_TV_LISTINGS",
-                    "android.permission.READ_EXTERNAL_STORAGE", "android.permission.ACCESS_FINE_LOCATION"};
+                    "android.permission.READ_EXTERNAL_STORAGE", "android.permission.ACCESS_FINE_LOCATION",
+                    "android.permission.WRITE_SECURE_SETTINGS"};
             int ok = 0;
             for (String p : perms) {
                 String o = adb.shell("pm grant " + pkg + " " + p);

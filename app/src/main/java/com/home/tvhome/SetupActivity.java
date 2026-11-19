@@ -172,7 +172,7 @@ public class SetupActivity extends Activity {
         body("So the Home button and switching the TV on open TV Home. TV Home can do this itself "
                 + "through the TV's own debugging connection — no computer needed. It also gives itself "
                 + "the permissions it needs, and only runs a short, fixed list of commands.");
-        status = new TextView(this);
+        status = new UiStyle.FontText(this);
         status.setTextSize(15);
         status.setTextColor(0xCCFFFFFF);
         status.setGravity(Gravity.CENTER);
@@ -277,7 +277,7 @@ public class SetupActivity extends Activity {
     }
 
     private void title(String t) {
-        TextView v = new TextView(this);
+        TextView v = new UiStyle.FontText(this);
         v.setText(t);
         v.setTextSize(30);
         v.setTextColor(Color.WHITE);
@@ -289,7 +289,7 @@ public class SetupActivity extends Activity {
     }
 
     private void body(String t) {
-        TextView v = new TextView(this);
+        TextView v = new UiStyle.FontText(this);
         v.setText(t);
         v.setTextSize(16);
         v.setTextColor(0xB3FFFFFF);
@@ -301,7 +301,7 @@ public class SetupActivity extends Activity {
     }
 
     private View button(String text, boolean primary, final Runnable action) {
-        final TextView b = new TextView(this);
+        final TextView b = new UiStyle.FontText(this);
         b.setText(text);
         b.setTextSize(16);
         b.setGravity(Gravity.CENTER);
