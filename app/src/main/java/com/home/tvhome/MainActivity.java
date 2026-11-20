@@ -163,9 +163,9 @@ public class MainActivity extends Activity {
     private Wallpapers wallpapers;
     private Installer installer;
     // Dock
-    private static final int DOCK_ICON = 56;          // dp, icon size at rest
+    private static final int DOCK_ICON = 46;          // dp, icon size at rest
     private static final int DOCK_GAP = 12;           // dp between icons
-    private static final float DOCK_MAX = 1.55f;      // how big the selected icon grows
+    private static final float DOCK_MAX = 1.45f;      // how big the selected icon grows
     private FrameLayout dockFrame;
     private View dockBar;
     private TipView dockTip;
