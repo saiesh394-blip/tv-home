@@ -5101,6 +5101,7 @@ public class MainActivity extends Activity {
             heroTitle.setVisibility(View.VISIBLE);
             heroTitle.setTextSize(34);
             heroTitle.setSingleLine(true);
+            heroSub.setVisibility(View.VISIBLE);
             if (idleFull) wakeFromIdle();
             showGreeting();
             shelfLoadedMode = null;
@@ -5246,11 +5247,10 @@ public class MainActivity extends Activity {
                         if (sub.length() > 0) sub.append("  ·  ");
                         sub.append(c.desc);
                     }
-                } else {
-                    if (c.meta != null) sub.append(c.meta);
-                    if (c.desc != null && !c.desc.isEmpty()) sub.append('\n').append(c.desc);
                 }
+                // Movies and shows: just the title (or logo) over the poster, no summary.
                 heroSub.setText(sub.toString());
+                heroSub.setVisibility(sub.length() == 0 ? View.GONE : View.VISIBLE);
                 heroSub.setMaxLines(news ? 2 : 3);
                 shelfOpenText.setText(news ? "Read Story" : "Where to Watch");
                 hero.setTranslationY(dp(8));
