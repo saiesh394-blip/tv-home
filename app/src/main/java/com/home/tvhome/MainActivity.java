@@ -163,9 +163,9 @@ public class MainActivity extends Activity {
     private Wallpapers wallpapers;
     private Installer installer;
     // Dock
-    private static final int DOCK_ICON = 46;          // dp, icon size at rest
+    private static final int DOCK_ICON = 56;          // dp, icon size at rest
     private static final int DOCK_GAP = 12;           // dp between icons
-    private static final float DOCK_MAX = 1.45f;      // how big the selected icon grows
+    private static final float DOCK_MAX = 1.55f;      // how big the selected icon grows
     private FrameLayout dockFrame;
     private View dockBar;
     private TipView dockTip;
@@ -3335,6 +3335,21 @@ public class MainActivity extends Activity {
         prefs.edit().putString("recents", TextUtils.join("\n", r)).apply();
     }
 
+    /** Recent apps use smaller cards (about two-thirds size) so the row stays light. */
+    private void smallCard(View shell) {
+        if (!(shell instanceof LinearLayout)) return;
+        LinearLayout cell = (LinearLayout) shell;
+        int w = Math.round(dp(tileW) * 0.68f), h = Math.round(dp(tileH) * 0.68f);
+        cell.setPadding(dp(gap / 2) * 2 / 3, dp(8), dp(gap / 2) * 2 / 3, dp(2));
+        for (int i = 0; i < cell.getChildCount(); i++) {
+            View ch = cell.getChildAt(i);
+            ViewGroup.LayoutParams lp = ch.getLayoutParams();
+            lp.width = w;
+            if (i == 0) lp.height = h; else lp.height = dp(24);
+            ch.setLayoutParams(lp);
+        }
+    }
+
     private void renderRecents() {
         if (recentRow == null) return;
         recentRow.removeAllViews();
@@ -3343,8 +3358,10 @@ public class MainActivity extends Activity {
         for (String p : recents()) {
             App a = apps.get(p);
             if (a == null || hide.contains(p) || a.inputId != null) continue;
-            recentRow.addView(cell(a, false, "r:"));
-            if (++n >= COLS) break;
+            View c = cell(a, false, "r:");
+            smallCard(c);
+            recentRow.addView(c);
+            if (++n >= COLS + 2) break;
         }
         recentSection.setVisibility(n > 0 ? View.VISIBLE : View.GONE);
         muteClicks(recentRow);
