@@ -783,6 +783,9 @@ public class MainActivity extends Activity {
             @Override protected int computeScrollDeltaToGetChildRectOnScreen(Rect r) { return 0; }
         };
         scroll.setVerticalScrollBarEnabled(false);
+        // Rows fade softly into the dock instead of being cut off above it.
+        scroll.setVerticalFadingEdgeEnabled(true);
+        scroll.setFadingEdgeLength(dp(44));
         content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
         content.setClipChildren(false);
